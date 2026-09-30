@@ -42,9 +42,20 @@ const LABEL = "compact-adviser";
 const HINT = "Compact adviser: work appears completed or recorded. Run /compact to save tokens.";
 const USAGE =
   "Use /compact-adviser, auto, hint, off, status, threshold <tokens|default>, snooze or dismiss.";
+interface OmpContext extends ExtensionContext {
+  setTimeout(callback: () => void, ms: number): unknown;
+  clearTimer(timer: unknown): void;
+}
+interface OmpAPI {
+  on(
+    event: "agent_end" | "agent_start" | "session_before_branch" | "session_branch",
+    handler: (event: { willContinue?: boolean }, ctx: OmpContext) => void,
+  ): void;
+}
 interface Options {
   agentDir: string;
   version: string;
+  host?: "pi" | "omp";
   key?: () => string | undefined;
   now?: () => number;
   evaluate?: (
@@ -93,6 +104,7 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
   let automaticCompaction = false;
   let hintVisible = false;
   let diagnostic = "";
+  let cancelSettlement: (() => void) | undefined;
   const active = (ctx: ExtensionContext) => ctx.mode === "tui" && ctx.hasUI;
   function persist(state: SessionState) {
     pi.appendEntry(STATE_TYPE, state);
@@ -114,6 +126,8 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
   }
   function invalidate(ctx: ExtensionContext) {
     generation++;
+    cancelSettlement?.();
+    cancelSettlement = undefined;
     request?.abort();
     request = undefined;
     if (hintVisible && active(ctx)) ctx.ui.setWidget(LABEL, undefined);
@@ -187,7 +201,7 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
     }
     if (request || eligible(ctx, config, state) === undefined) return;
     const profile = parseProfile(config.profile);
-    const view = snapshot(ctx, [key(ctx.cwd), savedApiKey(store)]);
+    const view = snapshot(ctx, [key(ctx.cwd), savedApiKey(store)], options.host);
     if (view.conversationTokens <= 20000 || view.checkpointKey === state.lastHintKey) return;
     let loggedBody: string | undefined;
     if (config.logRequests) {
@@ -297,11 +311,42 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
   pi.on("turn_end", (_event, ctx) => {
     if (!ctx.isIdle() && hintVisible) invalidate(ctx);
   });
-  pi.on("agent_settled", (_event, ctx) => {
-    void settled(ctx).catch(() =>
-      notice(ctx, "Compact adviser could not inspect this checkpoint; context left unchanged."),
-    );
-  });
+  if (options.host === "omp") {
+    const omp = pi as unknown as OmpAPI;
+    omp.on("agent_start", (_event, ctx) => invalidate(ctx));
+    omp.on("agent_end", (event, ctx) => {
+      if (event.willContinue === true || !active(ctx)) return;
+      cancelSettlement?.();
+      const epoch = generation;
+      const identity = sessionIdentity(ctx);
+      // omp emits agent_end before the stream unwinds. Never manufacture idle state.
+      const timer = ctx.setTimeout(() => {
+        cancelSettlement = undefined;
+        if (generation !== epoch || sessionIdentity(ctx) !== identity || !ctx.isIdle()) return;
+        void settled(ctx).catch(() =>
+          notice(ctx, "Compact adviser could not inspect this checkpoint; context left unchanged."),
+        );
+      }, 0);
+      cancelSettlement = () => ctx.clearTimer(timer);
+    });
+    omp.on("session_before_branch", (_event, ctx) => {
+      lifetime++;
+      invalidate(ctx);
+    });
+    omp.on("session_branch", (_event, ctx) => {
+      lifetime++;
+      invalidate(ctx);
+      compacting = false;
+      automaticCompaction = false;
+      refresh(ctx);
+    });
+  } else {
+    pi.on("agent_settled", (_event, ctx) => {
+      void settled(ctx).catch(() =>
+        notice(ctx, "Compact adviser could not inspect this checkpoint; context left unchanged."),
+      );
+    });
+  }
   pi.on("session_start", (_event, ctx) => {
     lifetime++;
     invalidate(ctx);

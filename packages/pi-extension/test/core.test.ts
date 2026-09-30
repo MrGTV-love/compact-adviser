@@ -661,3 +661,24 @@ test("TypeSafe log append keeps prior lines", (t) => {
   assert.equal(lines[1].id, requestLogId(body));
   assert.notEqual(lines[0].id, lines[1].id);
 });
+
+test("omp snapshots resolve only the active native branch and compaction boundary", (t) => {
+  const h = harness(t);
+  const common = h.sm.getLeafId();
+  assert.ok(common);
+  h.sm.appendMessage(assistant("ABANDONED_BRANCH_ONLY"));
+  h.sm.branch(common);
+  h.sm.appendMessage(assistant("ACTIVE_NATIVE_BRANCH_ONLY"));
+  const active = snapshot(h.ctx, [], "omp");
+  const text = JSON.stringify(active.state);
+  assert.ok(text.includes("ACTIVE_NATIVE_BRANCH_ONLY"));
+  assert.ok(!text.includes("ABANDONED_BRANCH_ONLY"));
+  const retained = h.sm.getLeafId();
+  assert.ok(retained);
+  h.sm.appendCompaction("NATIVE_COMPACTED_SUMMARY", retained, 125000);
+  const compacted = snapshot(h.ctx, [], "omp");
+  const resolved = JSON.stringify(compacted.state);
+  assert.ok(resolved.includes("NATIVE_COMPACTED_SUMMARY"));
+  assert.ok(!resolved.includes("Earlier exploration."));
+  assert.ok(compacted.conversationTokens < active.conversationTokens);
+});

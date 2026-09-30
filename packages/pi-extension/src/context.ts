@@ -527,8 +527,14 @@ function sanitizeText(
   return { text: scrubbed.text, redacted: cleaned.redacted || scrubbed.redacted };
 }
 
-export function snapshot(ctx: ExtensionContext, secrets: readonly (string | undefined)[] = []) {
-  const messages = buildSessionContext(ctx.sessionManager.buildContextEntries()).messages;
+export function snapshot(
+  ctx: ExtensionContext,
+  secrets: readonly (string | undefined)[] = [],
+  host: "pi" | "omp" = "pi",
+) {
+  const entries =
+    host === "omp" ? ctx.sessionManager.getBranch() : ctx.sessionManager.buildContextEntries();
+  const messages = buildSessionContext(entries).messages;
   const conversationTokens = messages.reduce((sum, m) => sum + estimateTokens(m), 0);
   const paths = new Map<string, { path: string; name: string }>();
   const commands = new Map<string, string>();

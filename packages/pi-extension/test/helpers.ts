@@ -117,12 +117,19 @@ export function harness(
     idle = true,
     pending = false,
     clock = 100000;
+  const timers = new Map<number, () => void>();
+  let timerId = 0;
   const ctx = {
     mode: "tui",
     hasUI: true,
     cwd: dir,
     sessionManager: sm,
     model: { id: "fixture", provider: "fixture", contextWindow: 272000 },
+    setTimeout: (callback: () => void) => {
+      timers.set(++timerId, callback);
+      return timerId;
+    },
+    clearTimer: (timer: number) => timers.delete(timer),
     signal: undefined,
     ui: {
       notify: (text: string) => notifications.push(text),
@@ -209,12 +216,14 @@ export function harness(
     version = "0.82.0",
     credential: string | undefined | false = "test-key",
     hostJudge = false,
+    host: "pi" | "omp" = "pi",
   ) => {
     handlers.clear();
     command = undefined;
     installAdviser(api, {
       agentDir: dir,
       version,
+      host,
       ...(credential === false ? {} : { key: () => credential }),
       now: () => clock,
       ...(hostJudge
@@ -260,6 +269,12 @@ export function harness(
     fire,
     next,
     install,
+    settle: async () => {
+      const callbacks = [...timers.values()];
+      timers.clear();
+      for (const callback of callbacks) callback();
+      await flush();
+    },
     command: async (args: string) => {
       if (!command) throw new Error("command missing");
       await command(args, ctx);

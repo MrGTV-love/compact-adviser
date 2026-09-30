@@ -5,6 +5,7 @@ import {
   ENDPOINT,
   JUDGE_UNAVAILABLE_MESSAGE,
   JudgeError,
+  type Judgment,
   judgeErrorMessage,
   parseJudgment,
   requestBody,
@@ -676,4 +677,104 @@ test("COMPACT_ADVISER_DISABLE leaves the session alone when it is falsy or unset
     assert.equal(h.calls, 1, String(value));
     assert.ok(showedHint(h), String(value));
   }
+});
+
+test("omp terminal turns compact only after the real idle transition", async (t) => {
+  const h = harness(t);
+  h.install("18.4.4", "test-key", false, "omp");
+  h.enable("auto");
+  h.ctx.sessionManager = new Proxy(h.sm, {
+    get(target, property) {
+      if (property === "buildContextEntries") return undefined;
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  h.idle = false;
+  await h.fire("agent_end", { willContinue: false });
+  assert.equal(h.calls, 0);
+  assert.equal(h.compactions.length, 0);
+  h.idle = true;
+  await h.settle();
+  assert.equal(h.calls, 1);
+  assert.equal(h.compactions.length, 1);
+  await h.fire("agent_end");
+  await h.settle();
+  assert.equal(h.calls, 1);
+  assert.equal(h.compactions.length, 1);
+});
+
+test("omp automatic continuations and unsettled callbacks do not ask Jev", async (t) => {
+  for (const continuing of [true, false]) {
+    const h = harness(t);
+    h.install("18.4.4", "test-key", false, "omp");
+    h.enable("auto");
+    h.idle = false;
+    await h.fire("agent_end", { willContinue: continuing });
+    await h.settle();
+    h.idle = true;
+    await h.settle();
+    assert.equal(h.calls, 0);
+    assert.equal(h.compactions.length, 0);
+  }
+});
+
+test("omp input and native transitions cancel queued checkpoint judgments", async (t) => {
+  for (const event of [
+    "input",
+    "agent_start",
+    "before_agent_start",
+    "session_before_switch",
+    "session_before_branch",
+    "session_branch",
+    "session_before_tree",
+    "session_tree",
+    "session_before_compact",
+    "session_compact",
+    "model_select",
+    "session_shutdown",
+  ]) {
+    const h = harness(t);
+    h.install("18.4.4", "test-key", false, "omp");
+    h.enable("auto");
+    h.idle = false;
+    await h.fire("agent_end");
+    await h.fire(event, { compactionEntry: { id: "native" } });
+    h.idle = true;
+    await h.settle();
+    assert.equal(h.calls, 0, event);
+    assert.equal(h.compactions.length, 0, event);
+  }
+});
+
+test("omp queued messages and off configuration win before a deferred judgment", async (t) => {
+  for (const gate of ["pending", "off", "minimum"]) {
+    const h = harness(t);
+    h.install("18.4.4", "test-key", false, "omp");
+    h.enable("auto");
+    h.idle = false;
+    await h.fire("agent_end");
+    if (gate === "pending") h.pending = true;
+    else if (gate === "off") h.store.update({ mode: "off" });
+    else h.tokens = 39999;
+    h.idle = true;
+    await h.settle();
+    assert.equal(h.calls, 0, gate);
+    assert.equal(h.compactions.length, 0, gate);
+  }
+});
+
+test("omp branching aborts in-flight Jev judgment before it can compact", async (t) => {
+  const answer = Promise.withResolvers<Judgment>();
+  const h = harness(t, () => answer.promise);
+  h.install("18.4.4", "test-key", false, "omp");
+  h.enable("auto");
+  await h.fire("agent_end");
+  await h.settle();
+  assert.equal(h.calls, 1);
+  await h.fire("session_before_branch");
+  assert.equal(h.signals[0].aborted, true);
+  answer.resolve(success());
+  await flush();
+  assert.equal(h.compactions.length, 0);
 });
