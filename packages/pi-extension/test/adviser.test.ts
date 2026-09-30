@@ -778,3 +778,31 @@ test("omp branching aborts in-flight Jev judgment before it can compact", async 
   await flush();
   assert.equal(h.compactions.length, 0);
 });
+
+test("user-facing notices name the host that owns compaction and settings", async (t) => {
+  for (const [host, name] of [
+    ["pi", "Pi"],
+    ["omp", "omp"],
+  ] as const) {
+    const h = harness(t);
+    h.install("18.4.5", "test-key", false, host);
+    h.confirms.push(false);
+    await h.command("auto");
+    assert.ok(h.confirmMessages[0].startsWith(`This persists across all ${name} sessions`), host);
+    h.enable("auto");
+    await h.fire(host === "omp" ? "agent_end" : "agent_settled");
+    await h.settle();
+    assert.equal(h.compactions.length, 1, host);
+    await h.fire("session_before_compact", {
+      preparation: { settings: { keepRecentTokens: 1000 } },
+    });
+    h.compactions[0].onError?.(new Error("Compaction cancelled"));
+    await h.command("hint");
+    const text = h.notifications.join("\n");
+    assert.ok(text.includes(`skipped: ${name} is configured to retain`), host);
+    assert.ok(text.includes(`No immediate retry; ${name} remains in control.`), host);
+    assert.ok(text.includes(`${name}'s built-in compaction is unchanged.`), host);
+    const other = name === "Pi" ? "omp" : "Pi";
+    assert.ok(!text.includes(`${other} remains in control`), host);
+  }
+});

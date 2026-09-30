@@ -20,6 +20,7 @@
     "check": "npm --prefix packages/pi-extension run check",
     "test": "npm --prefix packages/pi-extension test",
     "test:e2e": "npm --prefix packages/pi-extension run test:e2e",
+    "test:e2e:omp": "npm --prefix packages/pi-extension run test:e2e:omp",
     "typecheck": "npm --prefix packages/pi-extension run typecheck",
     "lint": "npm --prefix packages/pi-extension run lint",
     "check:claude-mod": "npm --prefix packages/claude-mod run check",

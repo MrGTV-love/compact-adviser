@@ -97,6 +97,7 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
     });
   const [major, minor] = options.version.split(".").map(Number);
   const supported = Number.isFinite(major) && (major > 0 || minor >= 82);
+  const hostName = options.host === "omp" ? "omp" : "Pi";
   let generation = 0;
   let lifetime = 0;
   let request: AbortController | undefined;
@@ -282,7 +283,7 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
             persist({ ...latestState, retryAfter: now() + 60000 });
             notice(
               ctx,
-              "Compaction failed or was cancelled. No immediate retry; Pi remains in control.",
+              `Compaction failed or was cancelled. No immediate retry; ${hostName} remains in control.`,
             );
           },
         });
@@ -371,7 +372,7 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
     if (automaticCompaction && event.preparation.settings.keepRecentTokens < 20000) {
       notice(
         ctx,
-        "Automatic compaction skipped: Pi is configured to retain less than 20k recent tokens. Use /compact manually if appropriate.",
+        `Automatic compaction skipped: ${hostName} is configured to retain less than 20k recent tokens. Use /compact manually if appropriate.`,
       );
       return { cancel: true };
     }
@@ -429,7 +430,7 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
         if (
           !(await ctx.ui.confirm(
             "Enable experimental automatic compaction?",
-            "This persists across all Pi sessions and projects. Compaction is lossy and timing accuracy is not proven. It only acts at eligible checkpoints; it does not compact immediately.",
+            `This persists across all ${hostName} sessions and projects. Compaction is lossy and timing accuracy is not proven. It only acts at eligible checkpoints; it does not compact immediately.`,
           ))
         )
           return;
@@ -443,7 +444,7 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
       save(
         ctx,
         { mode },
-        `${mode === "hint" ? "Hints only" : "Off"} saved (all sessions). Pi's built-in compaction is unchanged.`,
+        `${mode === "hint" ? "Hints only" : "Off"} saved (all sessions). ${hostName}'s built-in compaction is unchanged.`,
       );
   }
   function minimum(ctx: ExtensionCommandContext, text: string) {

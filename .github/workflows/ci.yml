@@ -135,6 +135,43 @@ jobs:
       - name: e2e-pi
         run: npm run test:e2e
 
+  e2e-omp:
+    name: e2e-omp
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load pinned host versions
+        run: grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .github/host-versions.env >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION || '24' }}
+          cache: npm
+          cache-dependency-path: packages/pi-extension/package-lock.json
+
+      - name: Install pinned omp
+        run: |
+          set -eu
+          OMP_DIR="${RUNNER_TEMP}/omp"
+          mkdir -p "${OMP_DIR}"
+          cd "${OMP_DIR}"
+          BASE="https://github.com/can1357/oh-my-pi/releases/download/v${OMP_VERSION}"
+          curl -fsSLO "${BASE}/omp-linux-x64"
+          curl -fsSLO "${BASE}/SHA256SUMS.txt"
+          grep ' omp-linux-x64$' SHA256SUMS.txt | sha256sum -c -
+          mv omp-linux-x64 omp
+          chmod +x omp
+          echo "COMPACT_TEST_OMP_BIN=${OMP_DIR}/omp" >> "$GITHUB_ENV"
+          echo "Using $("${OMP_DIR}/omp" --version) at ${OMP_DIR}/omp"
+
+      - name: Install Pi package
+        run: npm --prefix packages/pi-extension ci --ignore-scripts
+
+      - name: e2e-omp
+        run: npm run test:e2e:omp
+
   e2e-claude-mod:
     name: e2e-claude-mod
     runs-on: ubuntu-latest

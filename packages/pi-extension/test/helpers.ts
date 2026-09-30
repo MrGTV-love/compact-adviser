@@ -109,7 +109,8 @@ export function harness(
     compactions: CompactOptions[] = [];
   const selects: (string | undefined)[] = [],
     inputs: (string | undefined)[] = [],
-    confirms: boolean[] = [];
+    confirms: boolean[] = [],
+    confirmMessages: string[] = [];
   const inputDefaults: string[] = [],
     selectOptions: string[][] = [],
     customRenders: string[][] = [];
@@ -187,7 +188,10 @@ export function harness(
         }
         return result;
       },
-      confirm: async () => confirms.shift() ?? true,
+      confirm: async (_title: string, message: string) => {
+        confirmMessages.push(message);
+        return confirms.shift() ?? true;
+      },
     },
     isIdle: () => idle,
     hasPendingMessages: () => pending,
@@ -261,6 +265,7 @@ export function harness(
     selects,
     inputs,
     confirms,
+    confirmMessages,
     inputDefaults,
     selectOptions,
     customRenders,

@@ -30,10 +30,10 @@ def wait_for(text, start=0):
     raise AssertionError('TUI did not show '+repr(text)+'; tail: '+clean()[-2500:])
 def wait_ready():
     # Idle TUI: editor box (prompt) plus the built-in footer model id.
-    deadline = time.monotonic()+25
+    deadline = time.monotonic()+spec.get('startup', 25)
     while time.monotonic()<deadline:
         text = clean()
-        if '\u2500' in text and 'local' in text: return
+        if '\u2500' in text and spec.get('ready', 'local') in text: return
         drain(deadline)
     raise AssertionError('TUI did not show prompt/footer; tail: '+clean()[-2500:])
 try:
