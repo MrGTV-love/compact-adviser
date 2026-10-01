@@ -64,6 +64,7 @@ TGZ="$(pwd)/$(npm pack ./packages/pi-extension | tail -n 1)"
 omp plugin install "compact-adviser@file:$TGZ" --force
 ```
 
+`omp plugin install` runs `bun install`, so `bun` must be on `PATH`.
 Keep the tarball at that absolute path (`$TGZ`) for later reinstalls. This installs package
 files rather than linking a disposable source directory. `--scope` is only for
 marketplace installs; it does not select the scope of this npm/file installation.

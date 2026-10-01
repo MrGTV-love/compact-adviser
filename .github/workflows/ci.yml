@@ -151,6 +151,10 @@ jobs:
           cache: npm
           cache-dependency-path: packages/pi-extension/package-lock.json
 
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
       - name: Install pinned omp
         run: |
           set -eu
