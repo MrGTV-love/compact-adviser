@@ -54,15 +54,19 @@ To install from git: `pi install git:github.com/kunchenguid/compact-adviser` (ad
 ### omp
 
 This fork includes native omp support in the Pi extension; the upstream npm release
-`compact-adviser@0.1.11` does not yet include this adapter. Install from a persistent
-copy of this fork using omp's plugin manager, rather than modifying installed packages:
+`compact-adviser@0.1.11` does not yet include this adapter. From the repository root
+of an adapter-bearing revision of this fork, pack and install a copy through omp's
+plugin manager (an unmodified upstream revision does not provide omp support):
 
 ```sh
-git clone https://github.com/MrGTV-love/compact-adviser
-cd compact-adviser
 npm install --prefix packages/pi-extension
-omp plugin install ./packages/pi-extension --scope user
+npm pack ./packages/pi-extension
+omp plugin install "compact-adviser@file:$(pwd)/compact-adviser-0.1.11.tgz" --force
 ```
+
+Keep the tarball at that absolute path for later reinstalls. This installs package
+files rather than linking a disposable source directory. `--scope` is only for
+marketplace installs; it does not select the scope of this npm/file installation.
 
 Restart omp, then run `/compact-adviser status` and `/compact-adviser auto`.
 Automatic mode requires explicit first-use confirmation; settings and saved keys
