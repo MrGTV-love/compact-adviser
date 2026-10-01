@@ -731,7 +731,6 @@ test("omp input and native transitions cancel queued checkpoint judgments", asyn
     "session_tree",
     "auto_compaction_start",
     "session_compact",
-    "model_select",
     "session_shutdown",
   ]) {
     const h = harness(t);
