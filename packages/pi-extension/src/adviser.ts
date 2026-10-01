@@ -48,7 +48,12 @@ interface OmpContext extends ExtensionContext {
 }
 interface OmpAPI {
   on(
-    event: "agent_end" | "agent_start" | "session_before_branch" | "session_branch",
+    event:
+      | "agent_end"
+      | "agent_start"
+      | "auto_compaction_start"
+      | "session_before_branch"
+      | "session_branch",
     handler: (event: { willContinue?: boolean }, ctx: OmpContext) => void,
   ): void;
 }
@@ -341,11 +346,25 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
       automaticCompaction = false;
       refresh(ctx);
     });
+    omp.on("auto_compaction_start", (_event, ctx) => invalidate(ctx));
   } else {
     pi.on("agent_settled", (_event, ctx) => {
       void settled(ctx).catch(() =>
         notice(ctx, "Compact adviser could not inspect this checkpoint; context left unchanged."),
       );
+    });
+    pi.on("session_before_compact", (event, ctx) => {
+      invalidate(ctx);
+      compacting = true;
+      // The judgment assumes Pi's ordinary recent tail. Inspect the native
+      // preparation, not duplicated settings-file discovery, before summarization.
+      if (automaticCompaction && event.preparation.settings.keepRecentTokens < 20000) {
+        notice(
+          ctx,
+          "Automatic compaction skipped: Pi is configured to retain less than 20k recent tokens. Use /compact manually if appropriate.",
+        );
+        return { cancel: true };
+      }
     });
   }
   pi.on("session_start", (_event, ctx) => {
@@ -363,19 +382,6 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
   });
   pi.on("input", (_event, ctx) => {
     invalidate(ctx);
-  });
-  pi.on("session_before_compact", (event, ctx) => {
-    invalidate(ctx);
-    compacting = true;
-    // The judgment assumes Pi's ordinary recent tail. Inspect the native
-    // preparation, not duplicated settings-file discovery, before summarization.
-    if (automaticCompaction && event.preparation.settings.keepRecentTokens < 20000) {
-      notice(
-        ctx,
-        `Automatic compaction skipped: ${hostName} is configured to retain less than 20k recent tokens. Use /compact manually if appropriate.`,
-      );
-      return { cancel: true };
-    }
   });
   pi.on("session_compact", (event, ctx) => {
     if (!active(ctx)) return;

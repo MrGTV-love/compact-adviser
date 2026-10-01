@@ -60,11 +60,11 @@ plugin manager (an unmodified upstream revision does not provide omp support):
 
 ```sh
 npm install --prefix packages/pi-extension
-npm pack ./packages/pi-extension
-omp plugin install "compact-adviser@file:$(pwd)/compact-adviser-0.1.11.tgz" --force
+TGZ="$(pwd)/$(npm pack ./packages/pi-extension | tail -n 1)"
+omp plugin install "compact-adviser@file:$TGZ" --force
 ```
 
-Keep the tarball at that absolute path for later reinstalls. This installs package
+Keep the tarball at that absolute path (`$TGZ`) for later reinstalls. This installs package
 files rather than linking a disposable source directory. `--scope` is only for
 marketplace installs; it does not select the scope of this npm/file installation.
 
@@ -75,11 +75,20 @@ Do not load a second copy of compact-adviser alongside this extension.
 
 omp emits `agent_end`, not Pi's `agent_settled`. The adapter ignores automatic
 continuations and waits through omp's managed timer until the session is actually
-idle. New input, pending messages, branching, session changes, and compaction cancel
-stale judgments. Snapshots resolve the native active branch and compaction boundary.
-The existing 40,000-token minimum, Jev score policy, cooldowns, and redaction remain
-unchanged. Only a qualifying judgment calls omp's native `ctx.compact()`; omp still
-owns its summary, retained context, manual compaction, and context-overflow handling.
+idle. New input, pending messages, branching, session changes, `auto_compaction_start`,
+and `session_compact` cancel stale judgments. Snapshots resolve the native active
+branch and compaction boundary. The existing 40,000-token minimum, Jev score policy,
+cooldowns, and redaction remain unchanged. Only a qualifying judgment calls omp's
+native `ctx.compact()`; omp still owns its summary, retained context, manual
+compaction, and context-overflow handling.
+
+On omp the adapter registers no `session_before_compact` hook, because any such hook
+turns off omp's async (background, speculative) compaction. omp's own compaction
+therefore runs as it does without the adviser, in every mode. The host-owned
+limitation: on omp the adviser cannot read or veto `compaction.keepRecentTokens`.
+Pi skips an automatic compaction when that setting is below 20k recent tokens; on
+omp an automatic compaction keeps the recent tail that omp is configured to keep
+(omp's default is 20k).
 
 ### Claude Code
 

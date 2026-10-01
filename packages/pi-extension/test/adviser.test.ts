@@ -729,7 +729,7 @@ test("omp input and native transitions cancel queued checkpoint judgments", asyn
     "session_branch",
     "session_before_tree",
     "session_tree",
-    "session_before_compact",
+    "auto_compaction_start",
     "session_compact",
     "model_select",
     "session_shutdown",
@@ -779,6 +779,29 @@ test("omp branching aborts in-flight Jev judgment before it can compact", async 
   assert.equal(h.compactions.length, 0);
 });
 
+test("omp leaves native async compaction enabled and its start aborts in-flight Jev", async (t) => {
+  for (const mode of ["off", "hint", "auto"] as const) {
+    const answer = Promise.withResolvers<Judgment>();
+    const h = harness(t, () => answer.promise);
+    h.install("18.4.5", "test-key", false, "omp");
+    h.store.update({ mode, autoAcknowledged: mode === "auto" });
+    const veto = await h.fire("session_before_compact", {
+      preparation: { settings: { keepRecentTokens: 1000 } },
+    });
+    assert.equal(veto.length, 0, mode);
+    if (mode === "off") continue;
+    await h.fire("agent_end");
+    await h.settle();
+    assert.equal(h.calls, 1, mode);
+    await h.fire("auto_compaction_start", { reason: "threshold", action: "context-full" });
+    assert.equal(h.signals[0].aborted, true, mode);
+    answer.resolve(success());
+    await flush();
+    assert.equal(h.compactions.length, 0, mode);
+    assert.equal(showedHint(h), false, mode);
+  }
+});
+
 test("user-facing notices name the host that owns compaction and settings", async (t) => {
   for (const [host, name] of [
     ["pi", "Pi"],
@@ -799,7 +822,7 @@ test("user-facing notices name the host that owns compaction and settings", asyn
     h.compactions[0].onError?.(new Error("Compaction cancelled"));
     await h.command("hint");
     const text = h.notifications.join("\n");
-    assert.ok(text.includes(`skipped: ${name} is configured to retain`), host);
+    assert.equal(text.includes("skipped: Pi is configured to retain"), host === "pi", host);
     assert.ok(text.includes(`No immediate retry; ${name} remains in control.`), host);
     assert.ok(text.includes(`${name}'s built-in compaction is unchanged.`), host);
     const other = name === "Pi" ? "omp" : "Pi";

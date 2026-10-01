@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, type TestContext } from "node:test";
@@ -18,13 +18,25 @@ after(() => rmSync(home, { recursive: true, force: true }));
 
 function run(
   t: TestContext,
-  mode: "hint" | "auto",
-  actions: { send: string; wait?: string }[],
-  acknowledged = mode === "auto",
+  mode: "off" | "hint" | "auto",
+  actions: { send?: string; wait?: string; wait_log?: string }[],
+  {
+    acknowledged = mode === "auto",
+    minContextTokens,
+    ompConfig,
+    installedHome,
+  }: {
+    acknowledged?: boolean;
+    minContextTokens?: number;
+    ompConfig?: string;
+    installedHome?: string;
+  } = {},
 ) {
   const dir = temp(t),
     store = new ConfigStore(dir);
   store.update({ mode, autoAcknowledged: acknowledged, logRequests: true });
+  if (minContextTokens !== undefined) store.update({ minContextTokens });
+  if (ompConfig !== undefined) writeFileSync(join(dir, "config.yml"), ompConfig);
   const sm = SessionManager.create(dir, join(dir, "sessions"));
   sm.appendMessage({
     role: "user",
@@ -38,9 +50,7 @@ function run(
     cwd: dir,
     command: [
       binary,
-      "--no-extensions",
-      "-e",
-      root,
+      ...(installedHome ? [] : ["--no-extensions", "-e", root]),
       "-e",
       join(root, "test/fixtures/runtime.ts"),
       "--no-skills",
@@ -58,13 +68,14 @@ function run(
       join(dir, "sessions"),
     ],
     env: {
-      HOME: home,
+      HOME: installedHome ?? home,
       PI_CODING_AGENT_DIR: dir,
       TYPESAFE_API_KEY: "test-key-not-a-secret",
       COMPACT_TEST_LOG: log,
       COMPACT_TEST_INPUT_TOKENS: "45000",
       COMPACT_TEST_COORDINATING: "0",
       COMPACT_TEST_JEV_FAILURE: "0",
+      COMPACT_TEST_NATIVE_SUMMARY: "1",
     },
     actions,
     ready: "Local test provider",
@@ -116,7 +127,7 @@ test("signed omp: automatic-mode consent names omp's own settings scope", (t) =>
       { send: "/compact-adviser auto\r", wait: "all omp sessions and projects" },
       { send: "\r", wait: "Automatic mode saved (all sessions)." },
     ],
-    false,
+    { acknowledged: false },
   );
   assert.ok(!r.result.tail.includes("all Pi sessions"));
   assert.equal(r.store.read().mode, "auto");
@@ -124,9 +135,58 @@ test("signed omp: automatic-mode consent names omp's own settings scope", (t) =>
   assert.equal(r.events.filter((e) => e.event === "jev").length, 0);
 });
 
-test("signed omp: opt-in auto uses omp's native compaction", (t) => {
+test("signed omp: opt-in auto uses omp's native compaction and summary", (t) => {
   const r = run(t, "auto", [{ send: "Finish the fixture report.\r", wait: "compacted ·" }]);
   assert.equal(r.events.filter((e) => e.event === "jev").length, 1);
   assert.equal(r.events.filter((e) => e.event === "compacted").length, 1);
+  assert.ok(r.events.filter((e) => e.event === "provider").length > 1);
   assert.ok(!r.result.tail.includes(HINT));
+});
+
+test("signed omp: off and auto keep omp's async background compaction", (t) => {
+  for (const mode of ["off", "auto"] as const) {
+    const r = run(
+      t,
+      mode,
+      [
+        { send: "Finish the fixture report.\r", wait: "report is saved" },
+        { wait_log: "handoff document" },
+      ],
+      { minContextTokens: 60000, ompConfig: "compaction:\n  thresholdTokens: 50000\n" },
+    );
+    const requests = r.events.filter((e) => e.event === "provider");
+    assert.equal(requests.length, 2, mode);
+    assert.match(requests[1].request, /handoff document/, mode);
+    assert.equal(r.events.filter((e) => e.event === "jev").length, 0, mode);
+    assert.equal(r.events.filter((e) => e.event === "compacted").length, 0, mode);
+  }
+});
+
+test("signed omp: the documented packed install compacts automatically", (t) => {
+  const pack = temp(t),
+    installedHome = temp(t);
+  const tarball = execFileSync("npm", ["pack", root], {
+    cwd: pack,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+    .trim()
+    .split("\n")
+    .at(-1);
+  assert.ok(tarball && existsSync(join(pack, tarball)), String(tarball));
+  execFileSync(
+    binary,
+    ["plugin", "install", `compact-adviser@file:${join(pack, tarball)}`, "--force"],
+    {
+      env: { ...process.env, HOME: installedHome },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 300000,
+    },
+  );
+  const r = run(t, "auto", [{ send: "Finish the fixture report.\r", wait: "compacted ·" }], {
+    installedHome,
+  });
+  assert.equal(r.events.filter((e) => e.event === "jev").length, 1);
+  assert.equal(r.events.filter((e) => e.event === "compacted").length, 1);
 });
