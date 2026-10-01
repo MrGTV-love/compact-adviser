@@ -12,7 +12,7 @@ import {
   parseMinimum,
   parseSavedApiKey,
 } from "./config.ts";
-import { snapshot } from "./context.ts";
+import { type OmpSources, snapshot } from "./context.ts";
 import { DISABLE_ENV, disabledByEnv } from "./disable.ts";
 import { formatKeyStatus, type ResolvedTypesafeApiKey, resolveTypesafeApiKey } from "./env.ts";
 import {
@@ -61,6 +61,7 @@ interface Options {
   agentDir: string;
   version: string;
   host?: "pi" | "omp";
+  sources?: () => Promise<OmpSources>;
   key?: () => string | undefined;
   now?: () => number;
   evaluate?: (
@@ -103,6 +104,13 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
   const [major, minor] = options.version.split(".").map(Number);
   const supported = Number.isFinite(major) && (major > 0 || minor >= 82);
   const hostName = options.host === "omp" ? "omp" : "Pi";
+  let ompSources: OmpSources | undefined;
+  options.sources?.().then(
+    (sources) => {
+      ompSources = sources;
+    },
+    () => {},
+  );
   let generation = 0;
   let lifetime = 0;
   let request: AbortController | undefined;
@@ -207,7 +215,8 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
     }
     if (request || eligible(ctx, config, state) === undefined) return;
     const profile = parseProfile(config.profile);
-    const view = snapshot(ctx, [key(ctx.cwd), savedApiKey(store)], options.host);
+    if (options.sources && !ompSources) throw new Error("omp source helpers unavailable");
+    const view = snapshot(ctx, [key(ctx.cwd), savedApiKey(store)], options.host, ompSources);
     if (view.conversationTokens <= 20000 || view.checkpointKey === state.lastHintKey) return;
     let loggedBody: string | undefined;
     if (config.logRequests) {

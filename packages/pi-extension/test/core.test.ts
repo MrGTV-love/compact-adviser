@@ -34,7 +34,14 @@ import {
   requestLogPath,
   responseLogLine,
 } from "../src/log.ts";
-import { apiResponse, assistant, harness, temp, toolResult } from "./helpers.ts";
+import {
+  apiResponse,
+  assistant,
+  harness,
+  recordedOmpSources,
+  temp,
+  toolResult,
+} from "./helpers.ts";
 
 test("config defaults, atomic persistence, field merging, contention and invalid files", (t) => {
   const dir = temp(t),
@@ -777,7 +784,7 @@ test("omp read selectors and failed hashline edits still exclude sensitive sourc
   h.sm.appendMessage(
     failed("e2", "Edit rejected for notes.md: hash #0000 is not from this session.\n\n*1:# Notes"),
   );
-  const view = snapshot(h.ctx, [], "omp");
+  const view = snapshot(h.ctx, [], "omp", recordedOmpSources);
   const body = requestBody(view.state);
   assert.ok(!body.includes("not-a-secret"));
   assert.equal(
@@ -786,6 +793,51 @@ test("omp read selectors and failed hashline edits still exclude sensitive sourc
   );
   assert.ok(body.includes("ORDINARY_READ_RESULT"));
   assert.ok(body.includes("Edit rejected for notes.md"));
+  assert.equal(view.state.coverage.redacted, true);
+  assert.deepEqual(view.state.savedArtifacts, []);
+});
+
+test("omp multi-path reads, archive members and noisy hashline headers exclude sensitive sources", (t) => {
+  const h = harness(t);
+  const fakeUrl = "DATABASE_URL=postgres://fixture:not-a-secret@db.invalid/app";
+  const call = (id: string, name: string, args: Record<string, string>) => ({
+    ...assistant(""),
+    content: [{ type: "toolCall" as const, id, name, arguments: args }],
+    stopReason: "toolUse" as const,
+  });
+  const read = (id: string, path: string, text: string, details: unknown) => {
+    h.sm.appendMessage(call(id, "read", { path, i: "read" }));
+    h.sm.appendMessage({ ...toolResult(text, "read", id), details });
+  };
+  // Shapes recorded from omp 18.4.5; content is fixture data.
+  const both = `Note: interpreted as 2 paths: notes.md, .env\n\n[notes.md#3BFE]\n1:# Notes\n\n[.env#E3A3]\n1:${fakeUrl}`;
+  const targets = { displayReadTargets: ["notes.md", ".env"] };
+  read("r1", "notes.md .env", both, targets);
+  read("r2", "notes.md, .env", both, targets);
+  read("r3", "notes.md .env", "LITERAL_DELIMITER_FILE", { totalLines: 1 });
+  const archive = { resolvedPath: join(h.dir, "backup.zip") };
+  read("r4", "backup.zip:.env", fakeUrl, archive);
+  read("r5", "backup.zip:notes.md", "ORDINARY_ARCHIVE_MEMBER", archive);
+  const noisy = "[*** Update File:.env#0000]\nPUT 1.=1:\n+DATABASE_URL=x\n";
+  h.sm.appendMessage(call("e1", "edit", { input: noisy, i: "edit" }));
+  h.sm.appendMessage({
+    ...toolResult(
+      `Edit rejected for .env: hash #0000 is not from this session.\n\n*1:${fakeUrl}\n 2:`,
+      "edit",
+      "e1",
+    ),
+    details: {},
+    isError: true,
+  });
+  const view = snapshot(h.ctx, [], "omp", recordedOmpSources);
+  const body = requestBody(view.state);
+  assert.ok(!body.includes("not-a-secret"));
+  assert.equal(
+    view.state.recent.filter((m) => m.text === "[Sensitive file content excluded]").length,
+    4,
+  );
+  assert.ok(body.includes("LITERAL_DELIMITER_FILE"));
+  assert.ok(body.includes("ORDINARY_ARCHIVE_MEMBER"));
   assert.equal(view.state.coverage.redacted, true);
   assert.deepEqual(view.state.savedArtifacts, []);
 });

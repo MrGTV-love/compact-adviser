@@ -7,7 +7,7 @@ import test, { after, type TestContext } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { ConfigStore } from "../src/config.ts";
 import { RECENT_TAIL_MESSAGES } from "../src/context.ts";
-import { assistant, temp } from "./helpers.ts";
+import { assistant, temp, toolResult } from "./helpers.ts";
 
 const root = process.cwd();
 const binary = process.env.COMPACT_TEST_OMP_BIN ?? "";
@@ -25,11 +25,13 @@ function run(
     minContextTokens,
     ompConfig,
     installedHome,
+    seed,
   }: {
     acknowledged?: boolean;
     minContextTokens?: number;
     ompConfig?: string;
     installedHome?: string;
+    seed?: (sm: SessionManager) => void;
   } = {},
 ) {
   const dir = temp(t),
@@ -45,6 +47,7 @@ function run(
   });
   sm.appendMessage(assistant("Earlier exploration. ".repeat(6000)));
   for (let i = 0; i < RECENT_TAIL_MESSAGES; i++) sm.appendMessage(assistant(`Earlier step ${i}`));
+  seed?.(sm);
   const log = join(dir, "events.jsonl");
   const spec = {
     cwd: dir,
@@ -189,4 +192,38 @@ test("signed omp: the documented packed install compacts automatically", (t) => 
   });
   assert.equal(r.events.filter((e) => e.event === "jev").length, 1);
   assert.equal(r.events.filter((e) => e.event === "compacted").length, 1);
+});
+
+test("signed omp: native source helpers keep sensitive fixture results out of the Jev request", (t) => {
+  const fakeUrl = "DATABASE_URL=postgres://fixture:not-a-secret@db.invalid/app";
+  const seed = (sm: SessionManager) => {
+    const call = (id: string, name: string, args: Record<string, string>) =>
+      sm.appendMessage({
+        ...assistant(""),
+        content: [{ type: "toolCall" as const, id, name, arguments: { ...args, i: name } }],
+        stopReason: "toolUse" as const,
+      });
+    const result = (id: string, name: string, text: string, details: unknown, isError = false) =>
+      sm.appendMessage({ ...toolResult(text, name, id), details, isError });
+    const both = `Note: interpreted as 2 paths: notes.md, .env\n\n[notes.md#3BFE]\n1:# Notes\n\n[.env#E3A3]\n1:${fakeUrl}`;
+    call("r1", "read", { path: "notes.md .env" });
+    result("r1", "read", both, { displayReadTargets: ["notes.md", ".env"] });
+    call("r2", "read", { path: "notes.md .env" });
+    result("r2", "read", "LITERAL_DELIMITER_FILE", { totalLines: 1 });
+    call("r3", "read", { path: "backup.zip:.env" });
+    result("r3", "read", fakeUrl, { resolvedPath: "backup.zip" });
+    call("r4", "read", { path: "backup.zip:notes.md" });
+    result("r4", "read", "ORDINARY_ARCHIVE_MEMBER", { resolvedPath: "backup.zip" });
+    call("e1", "edit", { input: "[*** Update File:.env#0000]\nPUT 1.=1:\n+DATABASE_URL=x\n" });
+    result("e1", "edit", `Edit rejected for .env.\n\n*1:${fakeUrl}`, {}, true);
+    call("e2", "edit", { input: "[notes.md#0000]\nPUT >1:\n+saved\n" });
+    result("e2", "edit", "Edit rejected for notes.md: ORDINARY_EDIT_ERROR", {}, true);
+  };
+  const r = run(t, "hint", [{ send: "Finish the fixture report.\r", wait: HINT }], { seed });
+  assert.equal(r.events.filter((e) => e.event === "jev").length, 1);
+  const request = JSON.stringify(r.logLines.find((line) => line.kind === "request")?.body);
+  assert.equal(readFileSync(r.requestLog, "utf8").includes("not-a-secret"), false);
+  assert.equal(request.split("[Sensitive file content excluded]").length - 1, 3);
+  for (const kept of ["LITERAL_DELIMITER_FILE", "ORDINARY_ARCHIVE_MEMBER", "ORDINARY_EDIT_ERROR"])
+    assert.ok(request.includes(kept), kept);
 });

@@ -11,7 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { installAdviser } from "../src/adviser.ts";
 import { ConfigStore } from "../src/config.ts";
-import { RECENT_TAIL_MESSAGES } from "../src/context.ts";
+import { type OmpSources, RECENT_TAIL_MESSAGES } from "../src/context.ts";
 import { type Judgment, parseJudgment } from "../src/judge.ts";
 
 export function temp(t: TestContext): string {
@@ -82,6 +82,20 @@ export function toolResult(text: string, toolName = "bash", toolCallId = "tool-1
     timestamp: Date.now(),
   };
 }
+/** omp 18.4.5's own editInspect and parseArchivePathCandidates outputs for these test inputs. */
+const recordedEditPaths = new Map([
+  ["[*** Update File:.env#0000]\nPUT 1.=1:\n+DATABASE_URL=x\n", [".env"]],
+  ["[.env#0000]\nPUT 1.=1:\n+DATABASE_URL=x\n", [".env"]],
+  ["[notes.md#0000]\nPUT >1:\n+saved\n", ["notes.md"]],
+]);
+const recordedArchiveMembers = new Map([
+  ["backup.zip:.env", [".env"]],
+  ["backup.zip:notes.md", ["notes.md"]],
+]);
+export const recordedOmpSources: OmpSources = {
+  editPaths: (args) => recordedEditPaths.get(String(args.input)) ?? [],
+  archiveMembers: (path) => recordedArchiveMembers.get(path) ?? [],
+};
 export const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 export function harness(
   t: TestContext,
@@ -221,6 +235,7 @@ export function harness(
     credential: string | undefined | false = "test-key",
     hostJudge = false,
     host: "pi" | "omp" = "pi",
+    sources?: () => Promise<OmpSources>,
   ) => {
     handlers.clear();
     command = undefined;
@@ -228,6 +243,7 @@ export function harness(
       agentDir: dir,
       version,
       host,
+      ...(sources ? { sources } : {}),
       ...(credential === false ? {} : { key: () => credential }),
       now: () => clock,
       ...(hostJudge

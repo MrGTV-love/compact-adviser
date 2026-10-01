@@ -13,7 +13,15 @@ import {
 } from "../src/judge.ts";
 import { requestLogPath } from "../src/log.ts";
 import { restoreState } from "../src/state.ts";
-import { apiResponse, assistant, flush, harness, success, toolResult } from "./helpers.ts";
+import {
+  apiResponse,
+  assistant,
+  flush,
+  harness,
+  recordedOmpSources,
+  success,
+  toolResult,
+} from "./helpers.ts";
 
 const HINT = "Compact adviser: work appears completed or recorded. Run /compact to save tokens.";
 const HINT_LINE = `warning:${HINT}`;
@@ -827,4 +835,47 @@ test("user-facing notices name the host that owns compaction and settings", asyn
     const other = name === "Pi" ? "omp" : "Pi";
     assert.ok(!text.includes(`${other} remains in control`), host);
   }
+});
+
+test("omp judges with its own source helpers and never without them", async (t) => {
+  const fakeUrl = "DATABASE_URL=postgres://fixture:not-a-secret@db.invalid/app";
+  const seed = (h: ReturnType<typeof harness>) => {
+    h.sm.appendMessage({
+      ...assistant(""),
+      content: [
+        {
+          type: "toolCall",
+          id: "e1",
+          name: "edit",
+          arguments: { input: "[*** Update File:.env#0000]\nPUT 1.=1:\n+DATABASE_URL=x\n" },
+        },
+      ],
+      stopReason: "toolUse",
+    });
+    h.sm.appendMessage({
+      ...toolResult(`Edit rejected for .env.\n\n*1:${fakeUrl}`, "edit", "e1"),
+      details: {},
+      isError: true,
+    });
+    h.next("Report saved; the phase is complete.");
+  };
+  const loaded = harness(t);
+  seed(loaded);
+  loaded.install("18.4.5", "test-key", false, "omp", async () => recordedOmpSources);
+  loaded.enable();
+  await loaded.fire("agent_end", { willContinue: false });
+  await loaded.settle();
+  assert.equal(loaded.calls, 1);
+  assert.ok(!JSON.stringify(loaded.payloads).includes("not-a-secret"));
+  assert.ok(JSON.stringify(loaded.payloads).includes("[Sensitive file content excluded]"));
+  const missing = harness(t);
+  seed(missing);
+  missing.install("18.4.5", "test-key", false, "omp", () =>
+    Promise.reject(new Error("module not shipped")),
+  );
+  missing.enable();
+  await missing.fire("agent_end", { willContinue: false });
+  await missing.settle();
+  assert.equal(missing.calls, 0);
+  assert.ok(missing.notifications.some((n) => n.includes("could not inspect this checkpoint")));
 });
