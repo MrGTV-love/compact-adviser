@@ -741,3 +741,51 @@ test("omp hashline edits take their paths from the result details", (t) => {
     "plain.md",
   ]);
 });
+
+test("omp read selectors and failed hashline edits still exclude sensitive sources", (t) => {
+  const h = harness(t);
+  const fakeUrl = "DATABASE_URL=postgres://fixture:not-a-secret@db.invalid/app";
+  const call = (id: string, name: string, args: Record<string, string>) => ({
+    ...assistant(""),
+    content: [{ type: "toolCall" as const, id, name, arguments: args }],
+    stopReason: "toolUse" as const,
+  });
+  const failed = (id: string, text: string) => ({
+    ...toolResult(text, "edit", id),
+    details: {},
+    isError: true,
+  });
+  // Shapes recorded from omp 18.4.5; content is fixture data.
+  h.sm.appendMessage(call("r1", "read", { path: ".env:raw", i: "read" }));
+  h.sm.appendMessage(toolResult(`${fakeUrl}\n`, "read", "r1"));
+  h.sm.appendMessage(call("r2", "read", { path: ".env:1-1", i: "read" }));
+  h.sm.appendMessage(toolResult(`[.env#B2EF]\n1:${fakeUrl}`, "read", "r2"));
+  h.sm.appendMessage(call("r3", "read", { path: "notes.md:raw", i: "read" }));
+  h.sm.appendMessage(toolResult("ORDINARY_READ_RESULT", "read", "r3"));
+  h.sm.appendMessage(
+    call("e1", "edit", { input: "[.env#0000]\nPUT 1.=1:\n+DATABASE_URL=x\n", i: "edit" }),
+  );
+  h.sm.appendMessage(
+    failed(
+      "e1",
+      `Edit rejected for .env: hash #0000 is not from this session.\n\n*1:${fakeUrl}\n 2:`,
+    ),
+  );
+  h.sm.appendMessage(
+    call("e2", "edit", { input: "[notes.md#0000]\nPUT >1:\n+saved\n", i: "edit" }),
+  );
+  h.sm.appendMessage(
+    failed("e2", "Edit rejected for notes.md: hash #0000 is not from this session.\n\n*1:# Notes"),
+  );
+  const view = snapshot(h.ctx, [], "omp");
+  const body = requestBody(view.state);
+  assert.ok(!body.includes("not-a-secret"));
+  assert.equal(
+    view.state.recent.filter((m) => m.text === "[Sensitive file content excluded]").length,
+    3,
+  );
+  assert.ok(body.includes("ORDINARY_READ_RESULT"));
+  assert.ok(body.includes("Edit rejected for notes.md"));
+  assert.equal(view.state.coverage.redacted, true);
+  assert.deepEqual(view.state.savedArtifacts, []);
+});

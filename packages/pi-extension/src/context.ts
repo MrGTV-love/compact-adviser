@@ -541,6 +541,18 @@ function toolResultPaths(
   );
 }
 
+/** omp's read takes `path:selector`; its hashline edit names files only in `[path#tag]` headers. */
+function ompSources(name: string, args: Record<string, unknown>): string[] {
+  if (typeof args.path === "string") {
+    const parts = args.path.split(":");
+    return parts.map((_, i) => parts.slice(0, i + 1).join(":"));
+  }
+  if (name !== "edit" || typeof args.input !== "string") return [];
+  return [...args.input.matchAll(/^\s*\[([^#\r\n]+?)(?:#[^\r\n]*)?\]\s*$/gm)].map((m) =>
+    (m[1] ?? "").trim().replace(/^(["'])(.*)\1$/, "$2"),
+  );
+}
+
 export function snapshot(
   ctx: ExtensionContext,
   secrets: readonly (string | undefined)[] = [],
@@ -551,6 +563,7 @@ export function snapshot(
   const messages = buildSessionContext(entries).messages;
   const conversationTokens = messages.reduce((sum, m) => sum + estimateTokens(m), 0);
   const paths = new Map<string, string>();
+  const sources = new Map<string, string[]>();
   const commands = new Map<string, string>();
   const artifacts = new Set<string>();
   let hasImages = false,
@@ -568,6 +581,7 @@ export function snapshot(
       for (const c of m.content) {
         if (c.type !== "toolCall") continue;
         if (typeof c.arguments.path === "string") paths.set(c.id, c.arguments.path);
+        if (host === "omp") sources.set(c.id, ompSources(c.name, c.arguments));
         if (SHELL_TOOLS.has(c.name) && typeof c.arguments.command === "string")
           commands.set(c.id, c.arguments.command);
       }
@@ -601,7 +615,9 @@ export function snapshot(
       }
       if (
         m.role === "toolResult" &&
-        toolResultPaths(m, paths.get(m.toolCallId)).some((p) => sensitivePath.test(p))
+        [...toolResultPaths(m, paths.get(m.toolCallId)), ...(sources.get(m.toolCallId) ?? [])].some(
+          (p) => sensitivePath.test(p),
+        )
       ) {
         raw = "[Sensitive file content excluded]";
         redacted = true;
