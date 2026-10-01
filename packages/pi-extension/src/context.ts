@@ -527,6 +527,20 @@ function sanitizeText(
   return { text: scrubbed.text, redacted: cleaned.redacted || scrubbed.redacted };
 }
 
+/** omp's hashline edit names its files only in the result details. */
+function toolResultPaths(
+  m: { toolName: string; details?: unknown },
+  callPath: string | undefined,
+): string[] {
+  if (callPath !== undefined) return [callPath];
+  if (!["write", "edit"].includes(m.toolName)) return [];
+  const details = (m.details ?? {}) as { path?: unknown; perFileResults?: unknown };
+  const files = Array.isArray(details.perFileResults) ? details.perFileResults : [];
+  return [details.path, ...files.map((f) => (f as { path?: unknown } | null)?.path)].filter(
+    (p): p is string => typeof p === "string",
+  );
+}
+
 export function snapshot(
   ctx: ExtensionContext,
   secrets: readonly (string | undefined)[] = [],
@@ -536,7 +550,7 @@ export function snapshot(
     host === "omp" ? ctx.sessionManager.getBranch() : ctx.sessionManager.buildContextEntries();
   const messages = buildSessionContext(entries).messages;
   const conversationTokens = messages.reduce((sum, m) => sum + estimateTokens(m), 0);
-  const paths = new Map<string, { path: string; name: string }>();
+  const paths = new Map<string, string>();
   const commands = new Map<string, string>();
   const artifacts = new Set<string>();
   let hasImages = false,
@@ -553,17 +567,16 @@ export function snapshot(
     if (m.role === "assistant")
       for (const c of m.content) {
         if (c.type !== "toolCall") continue;
-        if (typeof c.arguments.path === "string")
-          paths.set(c.id, { path: c.arguments.path, name: c.name });
+        if (typeof c.arguments.path === "string") paths.set(c.id, c.arguments.path);
         if (SHELL_TOOLS.has(c.name) && typeof c.arguments.command === "string")
           commands.set(c.id, c.arguments.command);
       }
     if (m.role === "toolResult") {
-      const p = paths.get(m.toolCallId);
-      if (p && !m.isError && ["write", "edit"].includes(p.name) && !sensitivePath.test(p.path)) {
-        const full = resolve(ctx.cwd, p.path);
-        if (fileExists(full)) artifacts.add(p.path);
-      }
+      if (!m.isError && ["write", "edit"].includes(m.toolName))
+        for (const p of toolResultPaths(m, paths.get(m.toolCallId))) {
+          if (sensitivePath.test(p)) continue;
+          if (fileExists(resolve(ctx.cwd, p))) artifacts.add(p);
+        }
       const command = commands.get(m.toolCallId);
       if (command && !m.isError) {
         for (const written of shellWrittenPaths(command)) {
@@ -586,8 +599,10 @@ export function snapshot(
           .map((c) => c.text)
           .join("\n");
       }
-      const toolPathName = m.role === "toolResult" ? (paths.get(m.toolCallId)?.path ?? "") : "";
-      if (m.role === "toolResult" && sensitivePath.test(toolPathName)) {
+      if (
+        m.role === "toolResult" &&
+        toolResultPaths(m, paths.get(m.toolCallId)).some((p) => sensitivePath.test(p))
+      ) {
         raw = "[Sensitive file content excluded]";
         redacted = true;
       }

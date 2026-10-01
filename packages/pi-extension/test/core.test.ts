@@ -682,3 +682,62 @@ test("omp snapshots resolve only the active native branch and compaction boundar
   assert.ok(!resolved.includes("Earlier exploration."));
   assert.ok(compacted.conversationTokens < active.conversationTokens);
 });
+
+test("omp hashline edits take their paths from the result details", (t) => {
+  const h = harness(t);
+  for (const name of [".env", "notes.md", "report.md", "plain.md"])
+    writeFileSync(join(h.dir, name), "x");
+  const fakeUrl = "DATABASE_URL=postgres://fixture:not-a-secret@db.invalid/app";
+  const edit = (id: string, args: Record<string, string>) => ({
+    ...assistant(""),
+    content: [{ type: "toolCall" as const, id, name: "edit", arguments: args }],
+    stopReason: "toolUse" as const,
+  });
+  const result = (id: string, text: string, details: unknown) => ({
+    ...toolResult(text, "edit", id),
+    details,
+  });
+  // Shapes recorded from omp 18.4.5 hashline edits; content is fixture data.
+  h.sm.appendMessage(edit("e1", { input: "[.env#4B40]\nPUT 1.=1:\n+…", i: "edit" }));
+  h.sm.appendMessage(
+    result("e1", `[.env#B2EF]\n1:${fakeUrl}`, {
+      diff: `+1|${fakeUrl}`,
+      op: "update",
+      path: join(h.dir, ".env"),
+    }),
+  );
+  h.sm.appendMessage(edit("e2", { input: "[notes.md#FBB6]\nPUT >1:\n+saved", i: "edit" }));
+  h.sm.appendMessage(
+    result("e2", "[notes.md#88B7]\n1:# Notes\n2:saved", {
+      diff: "+2|saved",
+      op: "update",
+      path: join(h.dir, "notes.md"),
+    }),
+  );
+  h.sm.appendMessage(edit("e3", { input: "[.env#B2EF]\n…\n[report.md#FBB6]\n…", i: "edit" }));
+  h.sm.appendMessage(
+    result("e3", `[.env#A110]\n1:${fakeUrl}\n\n[report.md#88B7]\n1:# Report`, {
+      diff: "",
+      perFileResults: [
+        { path: join(h.dir, ".env"), op: "update" },
+        { path: join(h.dir, "report.md"), op: "update" },
+      ],
+    }),
+  );
+  h.sm.appendMessage(edit("e4", { path: "plain.md", oldText: "x", newText: "y" }));
+  h.sm.appendMessage(result("e4", "PLAIN_EDIT_RESULT", { path: join(h.dir, ".env") }));
+  const view = snapshot(h.ctx, [], "omp");
+  const body = requestBody(view.state);
+  assert.ok(!body.includes("not-a-secret"));
+  assert.equal(
+    view.state.recent.filter((m) => m.text === "[Sensitive file content excluded]").length,
+    2,
+  );
+  assert.ok(body.includes("PLAIN_EDIT_RESULT"));
+  assert.equal(view.state.coverage.redacted, true);
+  assert.deepEqual(view.state.savedArtifacts, [
+    join(h.dir, "notes.md"),
+    join(h.dir, "report.md"),
+    "plain.md",
+  ]);
+});
