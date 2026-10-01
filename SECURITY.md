@@ -17,7 +17,7 @@ Requests are capped at 32,000 serialized UTF-8 bytes.
 The TypeSafe API key never enters the model context or the request body; it is sent as the Authorization header to authenticate the call.
 Errors, timeouts, malformed responses, and contradictory factors never substitute an affirmative judgment.
 
-Automatic compaction on Pi and Claude Code is experimental and lossy; Codex and Grok are hint-only because an outside process cannot trigger `/compact` in their running sessions.
+Automatic compaction on Pi, omp, and Claude Code is experimental and lossy; Codex and Grok are hint-only because an outside process cannot trigger `/compact` in their running sessions.
 A high model probability is not proof of preservation or continuation quality.
 Hint mode is the default; the host's own compaction path and other extensions' hooks remain authoritative.
 
@@ -32,6 +32,7 @@ No implementation loads another's runtime or reads another's storage.
 ## Verified hosts
 
 Verified on 2026-09-17 against the actual **Pi 0.85.1**, **Claude Code 2.1.275**, **Codex CLI 0.153.4**, and **Grok Build 1.0.34** host runtimes.
+The Pi extension also loads natively in **omp 18.4.5**, verified by its own live suite.
 The Pi extension API floor remains 0.82.0; the Claude Code mods API is early access and default-off; the Codex plugin requires Node 22.18 or newer and Codex CLI 0.153.0 or newer, and is supported on macOS and Linux. The Grok adapter requires Node 22.18 or newer.
 The Claude Code module is a complete no-op unless `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` is exactly `1`.
 Requests from the mod go through Claude Code's host fetch (`$.http.fetch`), which does not expose redirect control to plugins; the endpoint is `https://api.typesafe.ai/v1/systemone` unless `TYPESAFE_BASE` replaces its base.
@@ -54,6 +55,6 @@ Development dependencies can be revisited when upgrading the supported API basel
 
 ## Tests versus model accuracy
 
-The native integration tests use the real Pi executable, Claude Code TUI, Codex TUI, or Grok agent, isolated configuration directories, and deterministic provider and TypeSafe fixtures.
+The native integration tests use the real Pi or omp executable, Claude Code TUI, Codex TUI, or Grok agent, isolated configuration directories, and deterministic provider and TypeSafe fixtures.
 They prove API/UI integration, cancellation, and local safety conditions without exposing account credentials or conversation data.
 They do not establish live Jev precision or continued task quality after a real generated summary.

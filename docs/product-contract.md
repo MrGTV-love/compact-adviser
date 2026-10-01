@@ -31,7 +31,7 @@ Invalid values and cancellation preserve existing settings; failed saves are rep
 
 | Package | State | Installation |
 | --- | --- | --- |
-| `packages/pi-extension` | Pi implementation; also loads natively in omp, which emits `agent_end` instead of `agent_settled` | Install this package path with `pi install`, or with `omp plugin install` on omp |
+| `packages/pi-extension` | Pi implementation; also loads natively in omp, which emits `agent_end` instead of `agent_settled` | Install this package path with `pi install`; on omp, `npm pack` it and `omp plugin install` the tarball (see README) |
 | `packages/claude-mod` | Claude Code mod (early-access function-hooks API) | Load this package path with `claude --plugin-dir` and `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` |
 | `packages/codex-plugin` | Codex CLI plugin, hint-only | `codex plugin marketplace add` this repository, then `codex plugin add compact-adviser@compact-adviser` |
 | `packages/grok-plugin` | Grok Build plugin, hint-only | `grok plugin install <path> --trust`, then `/compact-adviser-install` for the hooks and a `[ui.status_line]` opt-in for the hint |
