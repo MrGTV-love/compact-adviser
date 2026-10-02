@@ -28,12 +28,21 @@ def wait_for(text, start=0):
         if text in clean()[start:]: return
         drain(deadline)
     raise AssertionError('TUI did not show '+repr(text)+'; tail: '+clean()[-2500:])
-def wait_ready():
-    # Idle TUI: editor box (prompt) plus the built-in footer model id.
+def wait_log(text):
     deadline = time.monotonic()+25
     while time.monotonic()<deadline:
+        try:
+            with open(spec['env']['COMPACT_TEST_LOG']) as f:
+                if text in f.read(): return
+        except FileNotFoundError: pass
+        drain(min(deadline, time.monotonic()+.2))
+    raise AssertionError('Log did not show '+repr(text)+'; tail: '+clean()[-2500:])
+def wait_ready():
+    # Idle TUI: editor box (prompt) plus the built-in footer model id.
+    deadline = time.monotonic()+spec.get('startup', 25)
+    while time.monotonic()<deadline:
         text = clean()
-        if '\u2500' in text and 'local' in text: return
+        if '\u2500' in text and spec.get('ready', 'local') in text: return
         drain(deadline)
     raise AssertionError('TUI did not show prompt/footer; tail: '+clean()[-2500:])
 try:
@@ -42,6 +51,7 @@ try:
         start=len(clean())
         if 'send' in action: os.write(master,action['send'].encode())
         if 'wait' in action: wait_for(action['wait'],start)
+        if 'wait_log' in action: wait_log(action['wait_log'])
     os.write(master,b'\x03')
     os.write(master,b'\x04')
     print(json.dumps({'ok':True,'tail':clean()[-5000:]}))

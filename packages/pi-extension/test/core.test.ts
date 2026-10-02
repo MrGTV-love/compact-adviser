@@ -34,7 +34,14 @@ import {
   requestLogPath,
   responseLogLine,
 } from "../src/log.ts";
-import { apiResponse, assistant, harness, temp, toolResult } from "./helpers.ts";
+import {
+  apiResponse,
+  assistant,
+  harness,
+  recordedOmpSources,
+  temp,
+  toolResult,
+} from "./helpers.ts";
 
 test("config defaults, atomic persistence, field merging, contention and invalid files", (t) => {
   const dir = temp(t),
@@ -660,4 +667,177 @@ test("TypeSafe log append keeps prior lines", (t) => {
   assert.equal(lines[0].body.state.note, "prior-session");
   assert.equal(lines[1].id, requestLogId(body));
   assert.notEqual(lines[0].id, lines[1].id);
+});
+
+test("omp snapshots resolve only the active native branch and compaction boundary", (t) => {
+  const h = harness(t);
+  const common = h.sm.getLeafId();
+  assert.ok(common);
+  h.sm.appendMessage(assistant("ABANDONED_BRANCH_ONLY"));
+  h.sm.branch(common);
+  h.sm.appendMessage(assistant("ACTIVE_NATIVE_BRANCH_ONLY"));
+  const active = snapshot(h.ctx, [], "omp");
+  const text = JSON.stringify(active.state);
+  assert.ok(text.includes("ACTIVE_NATIVE_BRANCH_ONLY"));
+  assert.ok(!text.includes("ABANDONED_BRANCH_ONLY"));
+  const retained = h.sm.getLeafId();
+  assert.ok(retained);
+  h.sm.appendCompaction("NATIVE_COMPACTED_SUMMARY", retained, 125000);
+  const compacted = snapshot(h.ctx, [], "omp");
+  const resolved = JSON.stringify(compacted.state);
+  assert.ok(resolved.includes("NATIVE_COMPACTED_SUMMARY"));
+  assert.ok(!resolved.includes("Earlier exploration."));
+  assert.ok(compacted.conversationTokens < active.conversationTokens);
+});
+
+test("omp hashline edits take their paths from the result details", (t) => {
+  const h = harness(t);
+  for (const name of [".env", "notes.md", "report.md", "plain.md"])
+    writeFileSync(join(h.dir, name), "x");
+  const fakeUrl = "DATABASE_URL=postgres://fixture:not-a-secret@db.invalid/app";
+  const edit = (id: string, args: Record<string, string>) => ({
+    ...assistant(""),
+    content: [{ type: "toolCall" as const, id, name: "edit", arguments: args }],
+    stopReason: "toolUse" as const,
+  });
+  const result = (id: string, text: string, details: unknown) => ({
+    ...toolResult(text, "edit", id),
+    details,
+  });
+  // Shapes recorded from omp 18.4.5 hashline edits; content is fixture data.
+  h.sm.appendMessage(edit("e1", { input: "[.env#4B40]\nPUT 1.=1:\n+…", i: "edit" }));
+  h.sm.appendMessage(
+    result("e1", `[.env#B2EF]\n1:${fakeUrl}`, {
+      diff: `+1|${fakeUrl}`,
+      op: "update",
+      path: join(h.dir, ".env"),
+    }),
+  );
+  h.sm.appendMessage(edit("e2", { input: "[notes.md#FBB6]\nPUT >1:\n+saved", i: "edit" }));
+  h.sm.appendMessage(
+    result("e2", "[notes.md#88B7]\n1:# Notes\n2:saved", {
+      diff: "+2|saved",
+      op: "update",
+      path: join(h.dir, "notes.md"),
+    }),
+  );
+  h.sm.appendMessage(edit("e3", { input: "[.env#B2EF]\n…\n[report.md#FBB6]\n…", i: "edit" }));
+  h.sm.appendMessage(
+    result("e3", `[.env#A110]\n1:${fakeUrl}\n\n[report.md#88B7]\n1:# Report`, {
+      diff: "",
+      perFileResults: [
+        { path: join(h.dir, ".env"), op: "update" },
+        { path: join(h.dir, "report.md"), op: "update" },
+      ],
+    }),
+  );
+  h.sm.appendMessage(edit("e4", { path: "plain.md", oldText: "x", newText: "y" }));
+  h.sm.appendMessage(result("e4", "PLAIN_EDIT_RESULT", { path: join(h.dir, ".env") }));
+  const view = snapshot(h.ctx, [], "omp");
+  const body = requestBody(view.state);
+  assert.ok(!body.includes("not-a-secret"));
+  assert.equal(
+    view.state.recent.filter((m) => m.text === "[Sensitive file content excluded]").length,
+    2,
+  );
+  assert.ok(body.includes("PLAIN_EDIT_RESULT"));
+  assert.equal(view.state.coverage.redacted, true);
+  assert.deepEqual(view.state.savedArtifacts, [
+    join(h.dir, "notes.md"),
+    join(h.dir, "report.md"),
+    "plain.md",
+  ]);
+});
+
+test("omp read selectors and failed hashline edits still exclude sensitive sources", (t) => {
+  const h = harness(t);
+  const fakeUrl = "DATABASE_URL=postgres://fixture:not-a-secret@db.invalid/app";
+  const call = (id: string, name: string, args: Record<string, string>) => ({
+    ...assistant(""),
+    content: [{ type: "toolCall" as const, id, name, arguments: args }],
+    stopReason: "toolUse" as const,
+  });
+  const failed = (id: string, text: string) => ({
+    ...toolResult(text, "edit", id),
+    details: {},
+    isError: true,
+  });
+  // Shapes recorded from omp 18.4.5; content is fixture data.
+  h.sm.appendMessage(call("r1", "read", { path: ".env:raw", i: "read" }));
+  h.sm.appendMessage(toolResult(`${fakeUrl}\n`, "read", "r1"));
+  h.sm.appendMessage(call("r2", "read", { path: ".env:1-1", i: "read" }));
+  h.sm.appendMessage(toolResult(`[.env#B2EF]\n1:${fakeUrl}`, "read", "r2"));
+  h.sm.appendMessage(call("r3", "read", { path: "notes.md:raw", i: "read" }));
+  h.sm.appendMessage(toolResult("ORDINARY_READ_RESULT", "read", "r3"));
+  h.sm.appendMessage(
+    call("e1", "edit", { input: "[.env#0000]\nPUT 1.=1:\n+DATABASE_URL=x\n", i: "edit" }),
+  );
+  h.sm.appendMessage(
+    failed(
+      "e1",
+      `Edit rejected for .env: hash #0000 is not from this session.\n\n*1:${fakeUrl}\n 2:`,
+    ),
+  );
+  h.sm.appendMessage(
+    call("e2", "edit", { input: "[notes.md#0000]\nPUT >1:\n+saved\n", i: "edit" }),
+  );
+  h.sm.appendMessage(
+    failed("e2", "Edit rejected for notes.md: hash #0000 is not from this session.\n\n*1:# Notes"),
+  );
+  const view = snapshot(h.ctx, [], "omp", recordedOmpSources);
+  const body = requestBody(view.state);
+  assert.ok(!body.includes("not-a-secret"));
+  assert.equal(
+    view.state.recent.filter((m) => m.text === "[Sensitive file content excluded]").length,
+    3,
+  );
+  assert.ok(body.includes("ORDINARY_READ_RESULT"));
+  assert.ok(body.includes("Edit rejected for notes.md"));
+  assert.equal(view.state.coverage.redacted, true);
+  assert.deepEqual(view.state.savedArtifacts, []);
+});
+
+test("omp multi-path reads, archive members and noisy hashline headers exclude sensitive sources", (t) => {
+  const h = harness(t);
+  const fakeUrl = "DATABASE_URL=postgres://fixture:not-a-secret@db.invalid/app";
+  const call = (id: string, name: string, args: Record<string, string>) => ({
+    ...assistant(""),
+    content: [{ type: "toolCall" as const, id, name, arguments: args }],
+    stopReason: "toolUse" as const,
+  });
+  const read = (id: string, path: string, text: string, details: unknown) => {
+    h.sm.appendMessage(call(id, "read", { path, i: "read" }));
+    h.sm.appendMessage({ ...toolResult(text, "read", id), details });
+  };
+  // Shapes recorded from omp 18.4.5; content is fixture data.
+  const both = `Note: interpreted as 2 paths: notes.md, .env\n\n[notes.md#3BFE]\n1:# Notes\n\n[.env#E3A3]\n1:${fakeUrl}`;
+  const targets = { displayReadTargets: ["notes.md", ".env"] };
+  read("r1", "notes.md .env", both, targets);
+  read("r2", "notes.md, .env", both, targets);
+  read("r3", "notes.md .env", "LITERAL_DELIMITER_FILE", { totalLines: 1 });
+  const archive = { resolvedPath: join(h.dir, "backup.zip") };
+  read("r4", "backup.zip:.env", fakeUrl, archive);
+  read("r5", "backup.zip:notes.md", "ORDINARY_ARCHIVE_MEMBER", archive);
+  const noisy = "[*** Update File:.env#0000]\nPUT 1.=1:\n+DATABASE_URL=x\n";
+  h.sm.appendMessage(call("e1", "edit", { input: noisy, i: "edit" }));
+  h.sm.appendMessage({
+    ...toolResult(
+      `Edit rejected for .env: hash #0000 is not from this session.\n\n*1:${fakeUrl}\n 2:`,
+      "edit",
+      "e1",
+    ),
+    details: {},
+    isError: true,
+  });
+  const view = snapshot(h.ctx, [], "omp", recordedOmpSources);
+  const body = requestBody(view.state);
+  assert.ok(!body.includes("not-a-secret"));
+  assert.equal(
+    view.state.recent.filter((m) => m.text === "[Sensitive file content excluded]").length,
+    4,
+  );
+  assert.ok(body.includes("LITERAL_DELIMITER_FILE"));
+  assert.ok(body.includes("ORDINARY_ARCHIVE_MEMBER"));
+  assert.equal(view.state.coverage.redacted, true);
+  assert.deepEqual(view.state.savedArtifacts, []);
 });

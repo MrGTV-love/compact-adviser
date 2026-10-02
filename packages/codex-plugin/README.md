@@ -30,13 +30,13 @@
 
 It uses [Jev](https://typesafe.ai) to instantly judge whether the current session is likely at a boundary that's safe to compact.
 
-It can give you a hint to run `/compact` - or, on Pi and Claude Code, if you opt in, it can run it for you at the right time automatically. Codex CLI and Grok are hint-only: nothing outside their sessions can trigger `/compact`.
+It can give you a hint to run `/compact` - or, on Pi, omp, and Claude Code, if you opt in, it can run it for you at the right time automatically. Codex CLI and Grok are hint-only: nothing outside their sessions can trigger `/compact`.
 
 Judgment is two one-sentence Jev questions in one request (is the unit finished; is this hands-on work or coordination), composed in code into one score. The hint floor is 0.90 while the context is mostly empty (through about 10%) and relaxes toward 0.50 by about 90% full - a wrong hint costs most when there is still room. "Full" means the point where the host compacts: on Claude Code that is its auto-compact threshold when enabled, elsewhere the model's window. Automatic mode is the same gate, plus a first-use confirmation.
 
 ## Quick Start
 
-Prerequisites: Node 22+ (22.18+ for Codex and Grok), and one of [Pi](https://pi.dev) 0.82.0 or newer (verified on **0.85.1**), Claude Code 2.1.274 or newer (verified on **2.1.275**), Codex CLI 0.153.0 or newer (verified on **0.153.4**), or [Grok Build](https://docs.x.ai/build/overview) 1.0.34 or newer (verified on **1.0.34**), plus a [TypeSafe API key](https://console.typesafe.ai/settings/keys). Supply it as `TYPESAFE_API_KEY` in the launch environment or put it in the session cwd's `./.env`; Pi and Claude Code can also save it through their settings, while Codex and Grok provide an external compact-adviser CLI. Jev is TypeSafe's structured decision model; this package asks it two one-sentence classification questions and never asks it to write a summary.
+Prerequisites: Node 22+ (22.18+ for Codex and Grok), and one of [Pi](https://pi.dev) 0.82.0 or newer (verified on **0.85.1**), omp (verified on **18.4.5**), Claude Code 2.1.274 or newer (verified on **2.1.275**), Codex CLI 0.153.0 or newer (verified on **0.153.4**), or [Grok Build](https://docs.x.ai/build/overview) 1.0.34 or newer (verified on **1.0.34**), plus a [TypeSafe API key](https://console.typesafe.ai/settings/keys). Supply it as `TYPESAFE_API_KEY` in the launch environment or put it in the session cwd's `./.env`; Pi, omp, and Claude Code can also save it through their settings, while Codex and Grok provide an external compact-adviser CLI. Jev is TypeSafe's structured decision model; this package asks it two one-sentence classification questions and never asks it to write a summary.
 
 Installing the package is consent to send eligible checkpoint context to TypeSafe when a key is available and the other product gates pass. With `TYPESAFE_BASE` set, that context and the key go to that base instead.
 
@@ -50,6 +50,46 @@ Restart Pi or run `/reload`, then `/compact-adviser`.
 `/compact-adviser status` should say `Key: env`, `Key: saved`, or `Key: .env`.
 
 To install from git: `pi install git:github.com/kunchenguid/compact-adviser` (add `-l` for project-local).
+
+### omp
+
+This fork includes native omp support in the Pi extension; the upstream npm release
+`compact-adviser@0.1.11` does not yet include this adapter. From the repository root
+of an adapter-bearing revision of this fork, pack and install a copy through omp's
+plugin manager (an unmodified upstream revision does not provide omp support):
+
+```sh
+npm install --prefix packages/pi-extension
+TGZ="$(pwd)/$(npm pack ./packages/pi-extension | tail -n 1)"
+omp plugin install "compact-adviser@file:$TGZ" --force
+```
+
+`omp plugin install` runs `bun install`, so `bun` must be on `PATH`.
+Keep the tarball at that absolute path (`$TGZ`) for later reinstalls. This installs package
+files rather than linking a disposable source directory. `--scope` is only for
+marketplace installs; it does not select the scope of this npm/file installation.
+
+Restart omp, then run `/compact-adviser status` and `/compact-adviser auto`.
+Automatic mode requires explicit first-use confirmation; settings and saved keys
+live in `~/.omp/agent/compact-adviser.json`, separately from Pi's settings.
+Do not load a second copy of compact-adviser alongside this extension.
+
+omp emits `agent_end`, not Pi's `agent_settled`. The adapter ignores automatic
+continuations and waits through omp's managed timer until the session is actually
+idle. New input, pending messages, branching, session changes, `auto_compaction_start`,
+and `session_compact` cancel stale judgments. Snapshots resolve the native active
+branch and compaction boundary. The existing 40,000-token minimum, Jev score policy,
+cooldowns, and redaction remain unchanged. Only a qualifying judgment calls omp's
+native `ctx.compact()`; omp still owns its summary, retained context, manual
+compaction, and context-overflow handling.
+
+On omp the adapter registers no `session_before_compact` hook, because any such hook
+turns off omp's async (background, speculative) compaction. omp's own compaction
+therefore runs as it does without the adviser, in every mode. The host-owned
+limitation: on omp the adviser cannot read or veto `compaction.keepRecentTokens`.
+Pi skips an automatic compaction when that setting is below 20k recent tokens; on
+omp an automatic compaction keeps the recent tail that omp is configured to keep
+(omp's default is 20k).
 
 ### Claude Code
 
@@ -110,14 +150,14 @@ On Grok, save the TypeSafe key as `TYPESAFE_API_KEY` or a cwd `.env`, or with th
 
 | Symptom | Cause |
 | --- | --- |
-| `Key: missing` in `/compact-adviser status` (Pi, Claude Code) or `/compact-adviser` (Grok) | No `TYPESAFE_API_KEY` in the launch environment, saved settings, or the session cwd's `./.env` |
+| `Key: missing` in `/compact-adviser status` (Pi, omp, Claude Code) or `/compact-adviser` (Grok) | No `TYPESAFE_API_KEY` in the launch environment, saved settings, or the session cwd's `./.env` |
 | No `/compact-adviser` command in Claude Code | `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` is not exactly `1` |
 | Command exists, no hint | Context is below the constant 40,000-token minimum, the session is not idle, or the last turn was not a settled final answer |
 | Claude Code: "nonessential traffic" | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` blocks plugin network requests |
 | No hint in Codex | The hook is untrusted (review it in `/hooks`), Node is older than 22.18, or the hook cannot find Node at all - Codex rebuilds its PATH, so set `COMPACT_ADVISER_NODE` to an absolute `node` path |
 | Grok: no hint row at all | `[ui.status_line]` is not set in the `config.toml` `install` named, or Grok is in minimal render mode |
 | Grok: no hint after a completed turn | `/compact-adviser-install` has not run, so no Stop hook is judging |
-| Pi print / RPC / JSON, Claude `-p`, or `codex exec` | The adviser stays inert in reliably detected non-interactive sessions |
+| Pi or omp print / RPC / JSON, Claude `-p`, or `codex exec` | The adviser stays inert in reliably detected non-interactive sessions |
 | Nothing at all, in any host | `COMPACT_ADVISER_DISABLE` is set to a truthy value |
 
 ## Environment variables
@@ -160,7 +200,7 @@ settled turn
  hint: run /compact     or, with explicit auto, native compaction
 ```
 
-Automatic compaction is available on Pi and Claude Code. On Codex the same judgment only ever
+Automatic compaction is available on Pi, omp, and Claude Code. On Codex the same judgment only ever
 produces the hint, as a `↳ Hook ·` line in the scrollback. On Grok the two halves are separate
 processes: a `Stop` hook judges and records a verdict, and the `[ui.status_line]` script reads
 that verdict and paints the hint. The Grok hook always allows the stop and prints nothing, so a
@@ -170,11 +210,11 @@ hint can never be fed back to the model.
 
 | Command | Effect |
 | --- | --- |
-| `/compact-adviser` (Pi and Claude Code) | Settings (mode, minimum, request log, TypeSafe API key) |
-| `/compact-adviser auto` / `hint` / `off` (Pi and Claude Code) | Save that mode; auto asks for first-use confirmation |
-| `/compact-adviser status` (Pi and Claude Code) | Mode, minimum, context, key source (`env` / `saved` / `.env` / `missing`), cooldown |
-| `/compact-adviser threshold 60000` (Pi and Claude Code) | Save an absolute token minimum |
-| `/compact-adviser snooze` / `dismiss` (Pi and Claude Code) | Suppress the next three exchanges, or clear the current hint |
+| `/compact-adviser` (Pi, omp, and Claude Code) | Settings (mode, minimum, request log, TypeSafe API key) |
+| `/compact-adviser auto` / `hint` / `off` (Pi, omp, and Claude Code) | Save that mode; auto asks for first-use confirmation |
+| `/compact-adviser status` (Pi, omp, and Claude Code) | Mode, minimum, context, key source (`env` / `saved` / `.env` / `missing`), cooldown |
+| `/compact-adviser threshold 60000` (Pi, omp, and Claude Code) | Save an absolute token minimum |
+| `/compact-adviser snooze` / `dismiss` (Pi, omp, and Claude Code) | Suppress the next three exchanges, or clear the current hint |
 | `/compact-adviser` (Grok) | Show status; do not add arguments because Grok sends them to the model |
 | `/compact-adviser-hint` / `/compact-adviser-off` (Grok) | Save hint-only mode, or disable the adviser |
 | `/compact-adviser-snooze` / `/compact-adviser-dismiss` (Grok) | Suppress the next three exchanges, or clear the current hint |

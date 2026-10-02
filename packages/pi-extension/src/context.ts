@@ -527,10 +527,73 @@ function sanitizeText(
   return { text: scrubbed.text, redacted: cleaned.redacted || scrubbed.redacted };
 }
 
-export function snapshot(ctx: ExtensionContext, secrets: readonly (string | undefined)[] = []) {
-  const messages = buildSessionContext(ctx.sessionManager.buildContextEntries()).messages;
+/** omp's hashline edit names its files only in the result details. */
+function toolResultPaths(
+  m: { toolName: string; details?: unknown },
+  callPath: string | undefined,
+): string[] {
+  if (callPath !== undefined) return [callPath];
+  if (!["write", "edit"].includes(m.toolName)) return [];
+  const details = (m.details ?? {}) as { path?: unknown; perFileResults?: unknown };
+  const files = Array.isArray(details.perFileResults) ? details.perFileResults : [];
+  return [details.path, ...files.map((f) => (f as { path?: unknown } | null)?.path)].filter(
+    (p): p is string => typeof p === "string",
+  );
+}
+
+/** omp's own pure source parsers. Only omp ships them, so only omp may load them. */
+export interface OmpSources {
+  editPaths(args: Record<string, unknown>): string[];
+  archiveMembers(path: string): string[];
+}
+
+export async function loadOmpSources(): Promise<OmpSources> {
+  const [{ editInspect }, { parseArchivePathCandidates }] = await Promise.all([
+    import("@oh-my-pi/pi-natives"),
+    import("@oh-my-pi/pi-utils/ar"),
+  ]);
+  return {
+    editPaths: (args) => editInspect("hashline", JSON.stringify(args)).paths,
+    archiveMembers: (path) => parseArchivePathCandidates(path).map((c) => c.subPath),
+  };
+}
+
+/** Every source an omp tool result may show: `path:selector`, archive members, multi-path reads, hashline headers. */
+function ompSources(
+  call: { name: string; arguments: Record<string, unknown> } | undefined,
+  m: { toolName: string; details?: unknown },
+  omp: OmpSources | undefined,
+): string[] {
+  const args = call?.arguments ?? {};
+  const details = (m.details ?? {}) as { displayReadTargets?: unknown };
+  const targets = Array.isArray(details.displayReadTargets) ? details.displayReadTargets : [];
+  const named =
+    typeof args.path === "string"
+      ? [args.path]
+      : call?.name === "edit" && omp && toolResultPaths(m, undefined).length === 0
+        ? omp.editPaths(args)
+        : [];
+  return [...named, ...targets]
+    .filter((p): p is string => typeof p === "string")
+    .flatMap((p) => [p, ...(omp?.archiveMembers(p) ?? [])])
+    .flatMap((p) => {
+      const parts = p.split(":");
+      return parts.map((_, i) => parts.slice(0, i + 1).join(":"));
+    });
+}
+
+export function snapshot(
+  ctx: ExtensionContext,
+  secrets: readonly (string | undefined)[] = [],
+  host: "pi" | "omp" = "pi",
+  omp?: OmpSources,
+) {
+  const entries =
+    host === "omp" ? ctx.sessionManager.getBranch() : ctx.sessionManager.buildContextEntries();
+  const messages = buildSessionContext(entries).messages;
   const conversationTokens = messages.reduce((sum, m) => sum + estimateTokens(m), 0);
-  const paths = new Map<string, { path: string; name: string }>();
+  const paths = new Map<string, string>();
+  const calls = new Map<string, { name: string; arguments: Record<string, unknown> }>();
   const commands = new Map<string, string>();
   const artifacts = new Set<string>();
   let hasImages = false,
@@ -547,17 +610,17 @@ export function snapshot(ctx: ExtensionContext, secrets: readonly (string | unde
     if (m.role === "assistant")
       for (const c of m.content) {
         if (c.type !== "toolCall") continue;
-        if (typeof c.arguments.path === "string")
-          paths.set(c.id, { path: c.arguments.path, name: c.name });
+        if (typeof c.arguments.path === "string") paths.set(c.id, c.arguments.path);
+        if (host === "omp") calls.set(c.id, c);
         if (SHELL_TOOLS.has(c.name) && typeof c.arguments.command === "string")
           commands.set(c.id, c.arguments.command);
       }
     if (m.role === "toolResult") {
-      const p = paths.get(m.toolCallId);
-      if (p && !m.isError && ["write", "edit"].includes(p.name) && !sensitivePath.test(p.path)) {
-        const full = resolve(ctx.cwd, p.path);
-        if (fileExists(full)) artifacts.add(p.path);
-      }
+      if (!m.isError && ["write", "edit"].includes(m.toolName))
+        for (const p of toolResultPaths(m, paths.get(m.toolCallId))) {
+          if (sensitivePath.test(p)) continue;
+          if (fileExists(resolve(ctx.cwd, p))) artifacts.add(p);
+        }
       const command = commands.get(m.toolCallId);
       if (command && !m.isError) {
         for (const written of shellWrittenPaths(command)) {
@@ -580,8 +643,13 @@ export function snapshot(ctx: ExtensionContext, secrets: readonly (string | unde
           .map((c) => c.text)
           .join("\n");
       }
-      const toolPathName = m.role === "toolResult" ? (paths.get(m.toolCallId)?.path ?? "") : "";
-      if (m.role === "toolResult" && sensitivePath.test(toolPathName)) {
+      if (
+        m.role === "toolResult" &&
+        [
+          ...toolResultPaths(m, paths.get(m.toolCallId)),
+          ...(host === "omp" ? ompSources(calls.get(m.toolCallId), m, omp) : []),
+        ].some((p) => sensitivePath.test(p))
+      ) {
         raw = "[Sensitive file content excluded]";
         redacted = true;
       }
