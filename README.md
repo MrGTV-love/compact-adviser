@@ -237,3 +237,27 @@ Local judgment eval uses real session checkpoints to score when the adviser shou
 ![Use Jev to answer "should I /compact now?" — precision stays high while recall rises as context used goes from ≤10% to ≥90%](docs/eval-usage-floor-curve.png)
 
 The judgment-eval harness lives in [packages/pi-extension/eval/](packages/pi-extension/eval/README.md). It is not a published dataset: point it at your own sessions and keep transcripts local.
+
+## Live-test start pacing
+
+The Pi/omp terminal smoke fixtures keep their original product deadlines. For macOS
+validation on a shared machine, `packages/pi-extension/test/fixtures/start_gated.py`
+checks the operator-supplied load, free-memory, and start-spacing policy, then locks
+and advances the existing shared start timestamp **before** launching the command.
+Every heavy command must use the same timestamp. An absent or unreadable timestamp
+stops the launch; rejected samples do not consume a start. The lock covers only the
+check-and-stamp operation, not the command's lifetime.
+
+From `packages/pi-extension`:
+
+```sh
+npm run test:pacing
+python3 test/fixtures/start_gated.py \
+  --stamp "$SHARED_START" --receipts "$RECEIPTS" --log "$RUN_LOG" \
+  --scenario omp --max-load "$MAX_LOAD" --min-free "$MIN_FREE" --spacing "$SPACING" \
+  -- npm run test:e2e:omp
+```
+
+Set the native binary through `COMPACT_TEST_OMP_BIN` (or `COMPACT_TEST_PI_BIN` for
+`npm run test:e2e`). Keep receipts local: their start records bind the tested head,
+observed resources, prior shared timestamp, and newly recorded actual start.

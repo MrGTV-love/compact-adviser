@@ -42,7 +42,8 @@
     "format": "biome check --write .",
     "check": "npm run typecheck && npm run lint && npm test",
     "test:e2e": "node --import tsx --test test/e2e.test.ts",
-    "test:e2e:omp": "node --import tsx --test test/omp-e2e.test.ts"
+    "test:e2e:omp": "node --import tsx --test test/omp-e2e.test.ts",
+    "test:pacing": "python3 -m unittest discover -s test/fixtures -p test_start_gated.py"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
