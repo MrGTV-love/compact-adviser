@@ -248,6 +248,11 @@ Every heavy command must use the same timestamp. An absent or unreadable timesta
 stops the launch; rejected samples do not consume a start. The lock covers only the
 check-and-stamp operation, not the command's lifetime.
 
+The terminal fixtures explicitly enable the adviser only in their isolated
+fake-provider child process, then exercise its configured hint, auto, or off mode.
+An inherited `COMPACT_ADVISER_DISABLE` on the validation worker must not silently
+disable the test subject; the worker's own environment and adviser stay unchanged.
+
 From `packages/pi-extension`:
 
 ```sh

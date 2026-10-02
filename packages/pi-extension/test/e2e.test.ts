@@ -109,6 +109,8 @@ function run(
       PI_OFFLINE: "1",
       PI_TELEMETRY: "0",
       TYPESAFE_API_KEY: "test-key-not-a-secret",
+      // Enable the isolated test subject, not the validation worker that launched it.
+      COMPACT_ADVISER_DISABLE: "0",
       COMPACT_TEST_LOG: log,
       COMPACT_TEST_INPUT_TOKENS: String(fixture.inputTokens ?? 45000),
       COMPACT_TEST_COORDINATING: fixture.coordinating ? "1" : "0",
