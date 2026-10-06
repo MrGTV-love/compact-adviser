@@ -74,14 +74,10 @@ Automatic mode requires explicit first-use confirmation; settings and saved keys
 live in `~/.omp/agent/compact-adviser.json`, separately from Pi's settings.
 Do not load a second copy of compact-adviser alongside this extension.
 
-omp emits `agent_end`, not Pi's `agent_settled`. The adapter ignores automatic
-continuations and waits through omp's managed timer until the session is actually
-idle. New input, pending messages, branching, session changes, `auto_compaction_start`,
-and `session_compact` cancel stale judgments. Snapshots resolve the native active
-branch and compaction boundary. The existing 40,000-token minimum, Jev score policy,
-cooldowns, and redaction remain unchanged. Only a qualifying judgment calls omp's
-native `ctx.compact()`; omp still owns its summary, retained context, manual
-compaction, and context-overflow handling.
+Only a qualifying Jev judgment calls omp's native compaction; omp still owns its
+summary, retained context, manual compaction, and context-overflow handling.
+For idle lifecycle and snapshot details, see the
+[omp adapter contract](docs/product-contract.md#omp-adapter).
 
 On omp the adapter registers no `session_before_compact` hook, because any such hook
 turns off omp's async (background, speculative) compaction. omp's own compaction
@@ -228,7 +224,7 @@ snooze or dismiss: the CLI cannot tell which session is current.
 
 ## Judge profiles
 
-An optional [judge profile](docs/judge-profiles.md) changes the two questions, score weight, or floor schedule without changing shipped defaults. All four hosts accept the same bounded JSON string in the `profile` setting. Keep hint mode while evaluating a profile. Invalid profiles disable advice, and loading a profile never grants automatic-mode consent.
+An optional [judge profile](docs/judge-profiles.md) changes the two questions, score weight, or floor schedule without changing shipped defaults. All supported hosts accept the same bounded JSON string in the `profile` setting. Keep hint mode while evaluating a profile. Invalid profiles disable advice, and loading a profile never grants automatic-mode consent.
 
 ## Eval
 
@@ -240,20 +236,4 @@ The judgment-eval harness lives in [packages/pi-extension/eval/](packages/pi-ext
 
 ## Live tests
 
-The Pi/omp terminal smoke fixtures keep their original product deadlines and run
-directly, without a resource or start-pacing admission gate.
-
-The terminal fixtures explicitly enable the adviser only in their isolated
-fake-provider child process, then exercise its configured hint, auto, or off mode.
-An inherited `COMPACT_ADVISER_DISABLE` on the validation worker must not silently
-disable the test subject; the worker's own environment and adviser stay unchanged.
-
-From `packages/pi-extension`:
-
-```sh
-npm run test:e2e
-npm run test:e2e:omp
-```
-
-Set the native binary through `COMPACT_TEST_OMP_BIN` for `npm run test:e2e:omp`
-or `COMPACT_TEST_PI_BIN` for `npm run test:e2e`.
+For native live-test setup and commands, see [CONTRIBUTING.md](CONTRIBUTING.md#repo-conventions).

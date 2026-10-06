@@ -527,7 +527,7 @@ function sanitizeText(
   return { text: scrubbed.text, redacted: cleaned.redacted || scrubbed.redacted };
 }
 
-/** omp's hashline edit names its files only in the result details. */
+/** Successful omp hashline edits report artifact paths in result details, not path arguments. */
 function toolResultPaths(
   m: { toolName: string; details?: unknown },
   callPath: string | undefined,
@@ -558,7 +558,7 @@ export async function loadOmpSources(): Promise<OmpSources> {
   };
 }
 
-/** Every source an omp tool result may show: `path:selector`, archive members, multi-path reads, hashline headers. */
+/** Resolve omp source forms before applying sensitive-file exclusions. */
 function ompSources(
   call: { name: string; arguments: Record<string, unknown> } | undefined,
   m: { toolName: string; details?: unknown },

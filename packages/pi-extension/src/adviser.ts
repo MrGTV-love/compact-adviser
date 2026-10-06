@@ -170,7 +170,7 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
       return undefined;
     return usage.tokens;
   }
-  /** Context tokens over the model's window, or NaN when Pi does not know it (strictest floor). */
+  /** Context tokens over the model's window, or NaN when the host does not know it (strictest floor). */
   function usageFraction(ctx: ExtensionContext): number {
     const usage = ctx.getContextUsage();
     if (
