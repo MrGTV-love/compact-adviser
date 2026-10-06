@@ -238,15 +238,10 @@ Local judgment eval uses real session checkpoints to score when the adviser shou
 
 The judgment-eval harness lives in [packages/pi-extension/eval/](https://github.com/kunchenguid/compact-adviser/blob/main/packages/pi-extension/eval/README.md). It is not a published dataset: point it at your own sessions and keep transcripts local.
 
-## Live-test start pacing
+## Live tests
 
-The Pi/omp terminal smoke fixtures keep their original product deadlines. For macOS
-validation on a shared machine, `packages/pi-extension/test/fixtures/start_gated.py`
-checks the operator-supplied load, free-memory, and start-spacing policy, then locks
-and advances the existing shared start timestamp **before** launching the command.
-Every heavy command must use the same timestamp. An absent or unreadable timestamp
-stops the launch; rejected samples do not consume a start. The lock covers only the
-check-and-stamp operation, not the command's lifetime.
+The Pi/omp terminal smoke fixtures keep their original product deadlines and run
+directly, without a resource or start-pacing admission gate.
 
 The terminal fixtures explicitly enable the adviser only in their isolated
 fake-provider child process, then exercise its configured hint, auto, or off mode.
@@ -256,13 +251,9 @@ disable the test subject; the worker's own environment and adviser stay unchange
 From `packages/pi-extension`:
 
 ```sh
-npm run test:pacing
-python3 test/fixtures/start_gated.py \
-  --stamp "$SHARED_START" --receipts "$RECEIPTS" --log "$RUN_LOG" \
-  --scenario omp --max-load "$MAX_LOAD" --min-free "$MIN_FREE" --spacing "$SPACING" \
-  -- npm run test:e2e:omp
+npm run test:e2e
+npm run test:e2e:omp
 ```
 
-Set the native binary through `COMPACT_TEST_OMP_BIN` (or `COMPACT_TEST_PI_BIN` for
-`npm run test:e2e`). Keep receipts local: their start records bind the tested head,
-observed resources, prior shared timestamp, and newly recorded actual start.
+Set the native binary through `COMPACT_TEST_OMP_BIN` for `npm run test:e2e:omp`
+or `COMPACT_TEST_PI_BIN` for `npm run test:e2e`.
