@@ -5,6 +5,7 @@ import {
   ENDPOINT,
   JUDGE_UNAVAILABLE_MESSAGE,
   JudgeError,
+  type Judgment,
   judgeErrorMessage,
   parseJudgment,
   requestBody,
@@ -12,7 +13,15 @@ import {
 } from "../src/judge.ts";
 import { requestLogPath } from "../src/log.ts";
 import { restoreState } from "../src/state.ts";
-import { apiResponse, assistant, flush, harness, success, toolResult } from "./helpers.ts";
+import {
+  apiResponse,
+  assistant,
+  flush,
+  harness,
+  recordedOmpSources,
+  success,
+  toolResult,
+} from "./helpers.ts";
 
 const HINT = "Compact adviser: work appears completed or recorded. Run /compact to save tokens.";
 const HINT_LINE = `warning:${HINT}`;
@@ -676,4 +685,197 @@ test("COMPACT_ADVISER_DISABLE leaves the session alone when it is falsy or unset
     assert.equal(h.calls, 1, String(value));
     assert.ok(showedHint(h), String(value));
   }
+});
+
+test("omp terminal turns compact only after the real idle transition", async (t) => {
+  const h = harness(t);
+  h.install("18.4.4", "test-key", false, "omp");
+  h.enable("auto");
+  h.ctx.sessionManager = new Proxy(h.sm, {
+    get(target, property) {
+      if (property === "buildContextEntries") return undefined;
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  h.idle = false;
+  await h.fire("agent_end", { willContinue: false });
+  assert.equal(h.calls, 0);
+  assert.equal(h.compactions.length, 0);
+  h.idle = true;
+  await h.settle();
+  assert.equal(h.calls, 1);
+  assert.equal(h.compactions.length, 1);
+  await h.fire("agent_end");
+  await h.settle();
+  assert.equal(h.calls, 1);
+  assert.equal(h.compactions.length, 1);
+});
+
+test("omp automatic continuations and unsettled callbacks do not ask Jev", async (t) => {
+  for (const continuing of [true, false]) {
+    const h = harness(t);
+    h.install("18.4.4", "test-key", false, "omp");
+    h.enable("auto");
+    h.idle = false;
+    await h.fire("agent_end", { willContinue: continuing });
+    await h.settle();
+    h.idle = true;
+    await h.settle();
+    assert.equal(h.calls, 0);
+    assert.equal(h.compactions.length, 0);
+  }
+});
+
+test("omp input and native transitions cancel queued checkpoint judgments", async (t) => {
+  for (const event of [
+    "input",
+    "agent_start",
+    "before_agent_start",
+    "session_before_switch",
+    "session_before_branch",
+    "session_branch",
+    "session_before_tree",
+    "session_tree",
+    "auto_compaction_start",
+    "session_compact",
+    "session_shutdown",
+  ]) {
+    const h = harness(t);
+    h.install("18.4.4", "test-key", false, "omp");
+    h.enable("auto");
+    h.idle = false;
+    await h.fire("agent_end");
+    await h.fire(event, { compactionEntry: { id: "native" } });
+    h.idle = true;
+    await h.settle();
+    assert.equal(h.calls, 0, event);
+    assert.equal(h.compactions.length, 0, event);
+  }
+});
+
+test("omp queued messages and off configuration win before a deferred judgment", async (t) => {
+  for (const gate of ["pending", "off", "minimum"]) {
+    const h = harness(t);
+    h.install("18.4.4", "test-key", false, "omp");
+    h.enable("auto");
+    h.idle = false;
+    await h.fire("agent_end");
+    if (gate === "pending") h.pending = true;
+    else if (gate === "off") h.store.update({ mode: "off" });
+    else h.tokens = 39999;
+    h.idle = true;
+    await h.settle();
+    assert.equal(h.calls, 0, gate);
+    assert.equal(h.compactions.length, 0, gate);
+  }
+});
+
+test("omp branching aborts in-flight Jev judgment before it can compact", async (t) => {
+  const answer = Promise.withResolvers<Judgment>();
+  const h = harness(t, () => answer.promise);
+  h.install("18.4.4", "test-key", false, "omp");
+  h.enable("auto");
+  await h.fire("agent_end");
+  await h.settle();
+  assert.equal(h.calls, 1);
+  await h.fire("session_before_branch");
+  assert.equal(h.signals[0].aborted, true);
+  answer.resolve(success());
+  await flush();
+  assert.equal(h.compactions.length, 0);
+});
+
+test("omp leaves native async compaction enabled and its start aborts in-flight Jev", async (t) => {
+  for (const mode of ["off", "hint", "auto"] as const) {
+    const answer = Promise.withResolvers<Judgment>();
+    const h = harness(t, () => answer.promise);
+    h.install("18.4.5", "test-key", false, "omp");
+    h.store.update({ mode, autoAcknowledged: mode === "auto" });
+    const veto = await h.fire("session_before_compact", {
+      preparation: { settings: { keepRecentTokens: 1000 } },
+    });
+    assert.equal(veto.length, 0, mode);
+    if (mode === "off") continue;
+    await h.fire("agent_end");
+    await h.settle();
+    assert.equal(h.calls, 1, mode);
+    await h.fire("auto_compaction_start", { reason: "threshold", action: "context-full" });
+    assert.equal(h.signals[0].aborted, true, mode);
+    answer.resolve(success());
+    await flush();
+    assert.equal(h.compactions.length, 0, mode);
+    assert.equal(showedHint(h), false, mode);
+  }
+});
+
+test("user-facing notices name the host that owns compaction and settings", async (t) => {
+  for (const [host, name] of [
+    ["pi", "Pi"],
+    ["omp", "omp"],
+  ] as const) {
+    const h = harness(t);
+    h.install("18.4.5", "test-key", false, host);
+    h.confirms.push(false);
+    await h.command("auto");
+    assert.ok(h.confirmMessages[0].startsWith(`This persists across all ${name} sessions`), host);
+    h.enable("auto");
+    await h.fire(host === "omp" ? "agent_end" : "agent_settled");
+    await h.settle();
+    assert.equal(h.compactions.length, 1, host);
+    await h.fire("session_before_compact", {
+      preparation: { settings: { keepRecentTokens: 1000 } },
+    });
+    h.compactions[0].onError?.(new Error("Compaction cancelled"));
+    await h.command("hint");
+    const text = h.notifications.join("\n");
+    assert.equal(text.includes("skipped: Pi is configured to retain"), host === "pi", host);
+    assert.ok(text.includes(`No immediate retry; ${name} remains in control.`), host);
+    assert.ok(text.includes(`${name}'s built-in compaction is unchanged.`), host);
+    const other = name === "Pi" ? "omp" : "Pi";
+    assert.ok(!text.includes(`${other} remains in control`), host);
+  }
+});
+
+test("omp judges with its own source helpers and never without them", async (t) => {
+  const fakeUrl = "DATABASE_URL=postgres://fixture:not-a-secret@db.invalid/app";
+  const seed = (h: ReturnType<typeof harness>) => {
+    h.sm.appendMessage({
+      ...assistant(""),
+      content: [
+        {
+          type: "toolCall",
+          id: "e1",
+          name: "edit",
+          arguments: { input: "[*** Update File:.env#0000]\nPUT 1.=1:\n+DATABASE_URL=x\n" },
+        },
+      ],
+      stopReason: "toolUse",
+    });
+    h.sm.appendMessage({
+      ...toolResult(`Edit rejected for .env.\n\n*1:${fakeUrl}`, "edit", "e1"),
+      details: {},
+      isError: true,
+    });
+    h.next("Report saved; the phase is complete.");
+  };
+  const loaded = harness(t);
+  seed(loaded);
+  loaded.install("18.4.5", "test-key", false, "omp", async () => recordedOmpSources);
+  loaded.enable();
+  await loaded.fire("agent_end", { willContinue: false });
+  await loaded.settle();
+  assert.equal(loaded.calls, 1);
+  assert.ok(!JSON.stringify(loaded.payloads).includes("not-a-secret"));
+  assert.ok(JSON.stringify(loaded.payloads).includes("[Sensitive file content excluded]"));
+  const missing = harness(t);
+  seed(missing);
+  missing.install("18.4.5", "test-key", false, "omp", () =>
+    Promise.reject(new Error("module not shipped")),
+  );
+  missing.enable();
+  await missing.fire("agent_end", { willContinue: false });
+  await missing.settle();
+  assert.equal(missing.calls, 0);
+  assert.ok(missing.notifications.some((n) => n.includes("could not inspect this checkpoint")));
 });

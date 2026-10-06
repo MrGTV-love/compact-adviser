@@ -63,7 +63,7 @@ For the example above, the configuration field is:
 
 Use the same string on each host:
 
-- Pi: add `profile` to `compact-adviser.json` in the Pi agent directory, normally `~/.pi/agent`.
+- Pi: add `profile` to `compact-adviser.json` in the Pi agent directory, normally `~/.pi/agent` (`~/.omp/agent` on omp).
 - Claude Code: set `compact-adviser.profile` in `/config` to the serialized JSON text, without the outer string quotes.
 - Codex: add `profile` to `${CODEX_HOME:-~/.codex}/compact-adviser/settings.json`.
 - Grok: add `profile` to `${GROK_HOME:-~/.grok}/compact-adviser/settings.json`.

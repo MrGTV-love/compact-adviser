@@ -11,7 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { installAdviser } from "../src/adviser.ts";
 import { ConfigStore } from "../src/config.ts";
-import { RECENT_TAIL_MESSAGES } from "../src/context.ts";
+import { type OmpSources, RECENT_TAIL_MESSAGES } from "../src/context.ts";
 import { type Judgment, parseJudgment } from "../src/judge.ts";
 
 export function temp(t: TestContext): string {
@@ -82,6 +82,20 @@ export function toolResult(text: string, toolName = "bash", toolCallId = "tool-1
     timestamp: Date.now(),
   };
 }
+/** omp 18.4.5's own editInspect and parseArchivePathCandidates outputs for these test inputs. */
+const recordedEditPaths = new Map([
+  ["[*** Update File:.env#0000]\nPUT 1.=1:\n+DATABASE_URL=x\n", [".env"]],
+  ["[.env#0000]\nPUT 1.=1:\n+DATABASE_URL=x\n", [".env"]],
+  ["[notes.md#0000]\nPUT >1:\n+saved\n", ["notes.md"]],
+]);
+const recordedArchiveMembers = new Map([
+  ["backup.zip:.env", [".env"]],
+  ["backup.zip:notes.md", ["notes.md"]],
+]);
+export const recordedOmpSources: OmpSources = {
+  editPaths: (args) => recordedEditPaths.get(String(args.input)) ?? [],
+  archiveMembers: (path) => recordedArchiveMembers.get(path) ?? [],
+};
 export const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 export function harness(
   t: TestContext,
@@ -109,7 +123,8 @@ export function harness(
     compactions: CompactOptions[] = [];
   const selects: (string | undefined)[] = [],
     inputs: (string | undefined)[] = [],
-    confirms: boolean[] = [];
+    confirms: boolean[] = [],
+    confirmMessages: string[] = [];
   const inputDefaults: string[] = [],
     selectOptions: string[][] = [],
     customRenders: string[][] = [];
@@ -117,12 +132,19 @@ export function harness(
     idle = true,
     pending = false,
     clock = 100000;
+  const timers = new Map<number, () => void>();
+  let timerId = 0;
   const ctx = {
     mode: "tui",
     hasUI: true,
     cwd: dir,
     sessionManager: sm,
     model: { id: "fixture", provider: "fixture", contextWindow: 272000 },
+    setTimeout: (callback: () => void) => {
+      timers.set(++timerId, callback);
+      return timerId;
+    },
+    clearTimer: (timer: number) => timers.delete(timer),
     signal: undefined,
     ui: {
       notify: (text: string) => notifications.push(text),
@@ -180,7 +202,10 @@ export function harness(
         }
         return result;
       },
-      confirm: async () => confirms.shift() ?? true,
+      confirm: async (_title: string, message: string) => {
+        confirmMessages.push(message);
+        return confirms.shift() ?? true;
+      },
     },
     isIdle: () => idle,
     hasPendingMessages: () => pending,
@@ -209,12 +234,16 @@ export function harness(
     version = "0.82.0",
     credential: string | undefined | false = "test-key",
     hostJudge = false,
+    host: "pi" | "omp" = "pi",
+    sources?: () => Promise<OmpSources>,
   ) => {
     handlers.clear();
     command = undefined;
     installAdviser(api, {
       agentDir: dir,
       version,
+      host,
+      ...(sources ? { sources } : {}),
       ...(credential === false ? {} : { key: () => credential }),
       now: () => clock,
       ...(hostJudge
@@ -252,6 +281,7 @@ export function harness(
     selects,
     inputs,
     confirms,
+    confirmMessages,
     inputDefaults,
     selectOptions,
     customRenders,
@@ -260,6 +290,12 @@ export function harness(
     fire,
     next,
     install,
+    settle: async () => {
+      const callbacks = [...timers.values()];
+      timers.clear();
+      for (const callback of callbacks) callback();
+      await flush();
+    },
     command: async (args: string) => {
       if (!command) throw new Error("command missing");
       await command(args, ctx);
