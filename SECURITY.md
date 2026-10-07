@@ -2,11 +2,12 @@
 
 ## Conversation data
 
-The Pi extension, Claude Code mod, Codex plugin, and Grok Build plugin send selected conversation text to TypeSafe when the package is installed, a key is available from the launch environment, saved settings, or `TYPESAFE_API_KEY` in a `.env` file in the working directory, and the other product gates pass (mode, minimum context, idle session).
+The Pi extension, Claude Code mod, Codex plugin, and Grok Build plugin send selected conversation text to TypeSafe when the package is installed, a key is available from the launch environment, saved settings (a saved key can instead be a `!` command whose output is the key), or `TYPESAFE_API_KEY` in a `.env` file in the working directory, and the other product gates pass (mode, minimum context, idle session).
 Installing the package is that consent; there is no separate sharing toggle.
 With `TYPESAFE_BASE` set in the launch environment, the same request and key go to `<TYPESAFE_BASE>/v1/systemone` instead. The plugin never reads it from saved settings or a working-directory `.env`; a host's own trusted project configuration can still set environment variables, as it can already run hooks. The base must be `https`, or plain `http` only on a loopback host (`127.0.0.1`, `[::1]`, `localhost`), so the key never crosses the network in cleartext; any other value, or one with credentials, a query or a fragment, means no request and no advice.
 For host-specific key setup, see [Quick Start](README.md#quick-start). A saved key lives with mode and threshold in the implementation's settings store, with file permissions as restrictive as the host allows.
 It is never shown after save, and never written to logs, status lines, error messages, or TypeSafe request bodies, including when the agent reads the settings file.
+A saved value that starts with `!` is a command: the plugin runs the rest with `/bin/sh -c`, in the session's working directory with the session's environment, only when `TYPESAFE_API_KEY` is unset (on Pi, omp, Claude Code and Codex, after the cheaper product gates have passed), and uses its trimmed stdout as the key. Only the saved setting, which is the person's own and per-user, can hold a command; the environment and a working-directory `.env` are read as literal keys and never run. The output is held in memory for that one use, never cached or logged, and stderr is discarded. A command that fails, times out after 10 seconds, or prints no usable single-line key yields no key and no request.
 
 | Sent to `https://api.typesafe.ai/v1/systemone` | Not sent |
 | --- | --- |

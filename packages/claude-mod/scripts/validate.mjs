@@ -11,9 +11,10 @@ const expected = [
   "env writes: nothing",
   "$.fs.read (via appendTypeSafeLog, resolvedKey)",
   "$.fs.write (via appendTypeSafeLog)",
+  "$.process.run (via runKeyCommand)",
   "Validation passed",
 ];
-const forbidden = ["process.run", "env.set", "prompt.submit", "prompt.fill", "tool.call", "model."];
+const forbidden = ["env.set", "prompt.submit", "prompt.fill", "tool.call", "model."];
 const problems = [
   ...(status === 0 ? [] : [`exit status ${status}`]),
   ...expected.filter((line) => !output.includes(line)).map((line) => `missing: ${line}`),

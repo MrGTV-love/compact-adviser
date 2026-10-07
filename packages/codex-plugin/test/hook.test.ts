@@ -2,7 +2,7 @@
 // the TypeSafe request, the hint, and what each failure leaves behind.
 
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { ConfigStore } from "../src/config.ts";
 import { type Environment, HINT, type HookPayload, handle } from "../src/hook.ts";
@@ -364,6 +364,61 @@ test("a key from the working directory's .env is used and never logged", async (
     assert.equal(lines[1].qualifies, true);
     assert.equal(typeof lines[1].floor, "number");
     assert.ok(!log.includes("tsk-from-dotenv"), "the key never reaches the request log");
+  });
+});
+
+test("a saved key command supplies the key, runs in the session folder, and is never logged", async () => {
+  await withLab(async (lab) => {
+    writeRollout(lab.transcript, settledRollout());
+    writeFileSync(`${lab.cwd}/key-source`, "tsk-from-command\n");
+    const root = adviserRoot({ CODEX_HOME: lab.home });
+    new ConfigStore(root).update({ logRequests: true, typesafeApiKey: "!cat key-source" });
+    const typesafe = fakeTypesafe();
+    const base = environment(lab, { fetch: typesafe.fetch });
+
+    const output = await handle(stop(lab), { ...base, env: { CODEX_HOME: lab.home } });
+
+    assert.deepEqual(output, { systemMessage: HINT });
+    assert.equal(typesafe.requests[0]?.authorization, "Bearer tsk-from-command");
+    const log = readFileSync(requestLogPath(root, "s1"), "utf8");
+    assert.ok(!log.includes("tsk-from-command"), "the key never reaches the request log");
+    assert.ok(!log.includes("key-source"), "nor does the command");
+    assert.ok(!JSON.stringify(output).includes("tsk-from-command"));
+  });
+});
+
+test("a saved key command that fails keeps the checkpoint away from TypeSafe", async () => {
+  await withLab(async (lab) => {
+    writeRollout(lab.transcript, settledRollout());
+    const root = adviserRoot({ CODEX_HOME: lab.home });
+    new ConfigStore(root).update({
+      logRequests: true,
+      typesafeApiKey: "!echo tsk-never-used >&2; exit 2",
+    });
+    const typesafe = fakeTypesafe();
+    const base = environment(lab, { fetch: typesafe.fetch });
+
+    const output = await handle(stop(lab), { ...base, env: { CODEX_HOME: lab.home } });
+
+    assert.deepEqual(output, {});
+    assert.equal(typesafe.requests.length, 0);
+    assert.equal(existsSync(requestLogPath(root, "s1")), false);
+  });
+});
+
+test("TYPESAFE_API_KEY wins over a saved key command and the command does not run", async () => {
+  await withLab(async (lab) => {
+    writeRollout(lab.transcript, settledRollout());
+    const marker = `${lab.cwd}/ran`;
+    new ConfigStore(adviserRoot({ CODEX_HOME: lab.home })).update({
+      typesafeApiKey: `!touch '${marker}'; echo tsk-from-command`,
+    });
+    const typesafe = fakeTypesafe();
+
+    await handle(stop(lab), environment(lab, { fetch: typesafe.fetch }));
+
+    assert.equal(typesafe.requests[0]?.authorization, `Bearer ${TYPESAFE_KEY}`);
+    assert.equal(existsSync(marker), false);
   });
 });
 

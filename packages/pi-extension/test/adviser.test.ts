@@ -643,6 +643,66 @@ test("a saved key in a compact-adviser.json read is absent from the request body
   assert.ok(logged.includes("jev-latest"));
 });
 
+test("a saved key command supplies the key at settle time and its output never reaches a log", async (t) => {
+  const previous = process.env.TYPESAFE_API_KEY;
+  t.after(() => {
+    if (previous === undefined) delete process.env.TYPESAFE_API_KEY;
+    else process.env.TYPESAFE_API_KEY = previous;
+  });
+  delete process.env.TYPESAFE_API_KEY;
+  const secret = "tsk-command-key-must-not-leave";
+  let seenKey = "";
+  const h = harness(t, async (_state, key) => {
+    seenKey = key;
+    return success();
+  });
+  writeFileSync(`${h.dir}/key-source`, `${secret}\n`);
+  h.install("0.82.0", false);
+  h.store.update({ typesafeApiKey: "!cat key-source", logRequests: true });
+  h.enable();
+  await h.command("status");
+  assert.ok(h.notifications.at(-1)?.includes("Key: command"));
+  // The command output lands in the transcript as a tool result, so redaction must catch it.
+  h.sm.appendMessage({
+    ...assistant(""),
+    content: [
+      { type: "toolCall", id: "read-key", name: "read", arguments: { path: "key-source" } },
+    ],
+    stopReason: "toolUse",
+  });
+  h.sm.appendMessage(toolResult(`${secret}\n`, "read", "read-key"));
+  h.next();
+  await h.fire("agent_settled");
+  assert.equal(h.calls, 1);
+  assert.equal(seenKey, secret);
+  assert.ok(!requestBody(h.payloads[0]).includes(secret));
+  assert.ok(!readFileSync(requestLogPath(h.dir), "utf8").includes(secret));
+  assert.ok(!readFileSync(h.store.path, "utf8").includes(secret));
+  assert.ok(h.notifications.every((n) => !n.includes(secret)));
+  assert.ok(h.statuses.every((s) => !s?.includes(secret)));
+});
+
+test("a saved key command that fails leaves the adviser off without a request", async (t) => {
+  const previous = process.env.TYPESAFE_API_KEY;
+  t.after(() => {
+    if (previous === undefined) delete process.env.TYPESAFE_API_KEY;
+    else process.env.TYPESAFE_API_KEY = previous;
+  });
+  delete process.env.TYPESAFE_API_KEY;
+  const h = harness(t);
+  h.install("0.82.0", false);
+  h.store.update({ typesafeApiKey: "!echo tsk-never-used >&2; exit 4", logRequests: true });
+  h.enable();
+  await h.command("status");
+  assert.ok(h.notifications.at(-1)?.includes("Key: missing"));
+  assert.ok(!h.notifications.at(-1)?.includes("tsk-never-used"));
+  h.next();
+  await h.fire("agent_settled");
+  assert.equal(h.calls, 0);
+  assert.equal(showedHint(h), false);
+  assert.ok(h.notifications.every((n) => !n.includes("tsk-never-used")));
+});
+
 /** Sets `COMPACT_ADVISER_DISABLE` for one test and restores the launch environment after. */
 function disableEnv(t: TestContext, value: string | undefined) {
   const previous = process.env.COMPACT_ADVISER_DISABLE;

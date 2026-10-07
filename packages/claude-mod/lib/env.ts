@@ -3,8 +3,9 @@
 // Optional `export` / `declare -x` prefixes and one matching quote layer.
 
 const PREFIX = /^(?:export|declare\s+-x)\s+/;
+const MAX_KEY_LENGTH = 1024;
 
-export type TypesafeKeySource = "env" | "saved" | ".env" | "missing";
+export type TypesafeKeySource = "env" | "saved" | "command" | ".env" | "missing";
 export interface ResolvedTypesafeApiKey {
   value: string | undefined;
   source: TypesafeKeySource;
@@ -38,18 +39,50 @@ function nonempty(value: string | undefined): string | undefined {
 }
 
 /**
- * A non-empty host env value wins, then a menu-saved key, then a parsed .env
+ * A saved key that starts with `!` is a command, not a key: the rest runs as
+ * `/bin/sh -c` and its trimmed stdout is the key. Returns that command (empty
+ * when nothing follows the `!`), or undefined for an ordinary key. Only the saved
+ * setting can hold a command; the environment and `.env` are never run.
+ */
+export function savedKeyCommand(saved: string | undefined): string | undefined {
+  const text = saved?.trim();
+  return text?.startsWith("!") ? text.slice(1).trim() : undefined;
+}
+
+/**
+ * The key a saved command printed: its trimmed stdout, or undefined when that is empty,
+ * too long, or not one printable line (a newline in a key would split a request header).
+ */
+export function keyFromCommandOutput(stdout: string): string | undefined {
+  const key = stdout.trim();
+  if (key === "" || key.length > MAX_KEY_LENGTH) return undefined;
+  for (let i = 0; i < key.length; i++) {
+    const code = key.charCodeAt(i);
+    if (code < 32 || code === 127) return undefined;
+  }
+  return key;
+}
+
+/**
+ * A non-empty host env value wins, then a menu-saved key (or `commandKey`, the output of a
+ * saved `!command` the caller ran because the environment had no key), then a parsed .env
  * assignment. Missing pieces are skipped; the value is never logged.
  */
 export function resolveTypesafeApiKey(
   envValue: string | undefined,
   saved?: string,
   dotenvValue?: string,
+  commandKey?: string,
 ): ResolvedTypesafeApiKey {
   const fromEnv = nonempty(envValue);
   if (fromEnv !== undefined) return { value: fromEnv, source: "env" };
-  const fromSaved = nonempty(saved);
-  if (fromSaved !== undefined) return { value: fromSaved, source: "saved" };
+  if (savedKeyCommand(saved) !== undefined) {
+    const fromCommand = nonempty(commandKey);
+    if (fromCommand !== undefined) return { value: fromCommand, source: "command" };
+  } else {
+    const fromSaved = nonempty(saved);
+    if (fromSaved !== undefined) return { value: fromSaved, source: "saved" };
+  }
   const fromFile = nonempty(dotenvValue);
   if (fromFile !== undefined) return { value: fromFile, source: ".env" };
   return { value: undefined, source: "missing" };

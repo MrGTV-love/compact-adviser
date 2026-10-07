@@ -36,9 +36,25 @@ Judgment is two one-sentence Jev questions in one request (is the unit finished;
 
 ## Quick Start
 
-Prerequisites: Node 22+ (22.18+ for Codex and Grok), and one of [Pi](https://pi.dev) 0.82.0 or newer (verified on **0.85.1**), omp (verified on **18.4.5**), Claude Code 2.1.274 or newer (verified on **2.1.275**), Codex CLI 0.153.0 or newer (verified on **0.153.4**), or [Grok Build](https://docs.x.ai/build/overview) 1.0.34 or newer (verified on **1.0.34**), plus a [TypeSafe API key](https://console.typesafe.ai/settings/keys). Supply it as `TYPESAFE_API_KEY` in the launch environment or put it in the session cwd's `./.env`; Pi, omp, and Claude Code can also save it through their settings, while Codex and Grok provide an external compact-adviser CLI. Jev is TypeSafe's structured decision model; this package asks it two one-sentence classification questions and never asks it to write a summary.
+Prerequisites: Node 22+ (22.18+ for Codex and Grok), and one of [Pi](https://pi.dev) 0.82.0 or newer (verified on **0.85.1**), omp (verified on **18.4.5**), Claude Code 2.1.274 or newer (verified on **2.1.275**), Codex CLI 0.153.0 or newer (verified on **0.153.4**), or [Grok Build](https://docs.x.ai/build/overview) 1.0.34 or newer (verified on **1.0.34**), plus a [TypeSafe API key](https://console.typesafe.ai/settings/keys). Supply it as `TYPESAFE_API_KEY` in the launch environment or put it in the session cwd's `./.env`; Pi, omp, and Claude Code can also save it through their settings, while Codex and Grok provide an external compact-adviser CLI. To keep the key in one file instead of copying it, save a command that reads it ([below](#fetch-the-key-with-a-command)). Jev is TypeSafe's structured decision model; this package asks it two one-sentence classification questions and never asks it to write a summary.
 
 Installing the package is consent to send eligible checkpoint context to TypeSafe when a key is available and the other product gates pass. With `TYPESAFE_BASE` set, that context and the key go to that base instead.
+
+### Fetch the key with a command
+
+Keep the key in one file and let each session read it, instead of saving a copy per host.
+Save a key that starts with `!`: the rest runs as `/bin/sh -c` and its trimmed stdout is the key. For example:
+
+```
+!sed -n 's/^TYPESAFE_API_KEY=//p' "$HOME/secrets/.env"
+```
+
+Pi, omp, and Claude Code take it in the same TypeSafe API key setting that takes a pasted key. Codex takes it from `compact-adviser key set` and Grok from `compact-adviser key '<command>'`, both in a shell outside the host.
+
+- The command runs each time a key is needed, in the session's working directory, and only when `TYPESAFE_API_KEY` is unset. The key is never cached, written to disk, logged, or shown; `status` says `Key: command`.
+- A command that exits non-zero, runs past 10 seconds, or prints nothing, more than 1024 characters, or more than one line gives no key. The adviser then falls back to the cwd `./.env`, and with no key there it stays off (`Key: missing`).
+- Only the saved setting can hold a command. A value starting with `!` in `TYPESAFE_API_KEY` or in `./.env` is used as the literal key and never run, so a repository cannot make the adviser run anything.
+- It needs a POSIX `/bin/sh` (macOS or Linux). The saved text is the command, not the key, so store the path of the file that holds the key and nothing secret.
 
 ### Pi
 
@@ -47,7 +63,7 @@ pi install npm:compact-adviser
 ```
 
 Restart Pi or run `/reload`, then `/compact-adviser`.
-`/compact-adviser status` should say `Key: env`, `Key: saved`, or `Key: .env`.
+`/compact-adviser status` should say `Key: env`, `Key: saved`, `Key: command`, or `Key: .env`.
 
 To install from git: `pi install git:github.com/kunchenguid/compact-adviser` (add `-l` for project-local).
 
@@ -140,13 +156,13 @@ That writes `${GROK_HOME:-~/.grok}/hooks/compact-adviser.json`, because **Grok 1
 
 Then paste the `[ui.status_line]` block `install` printed into the config.toml path it named and restart Grok. The status row is off by default and only your own config can turn it on - a plugin cannot, and neither can a repository. Grok has one status row, so this script paints the built-in segments (`cwd`, `model`, `context`) too. Minimal render mode has no status row at all.
 
-On Grok, save the TypeSafe key as `TYPESAFE_API_KEY` or a cwd `.env`, or with the CLI `key` command from a shell outside Grok. Do not type secrets after a Grok slash command; Grok appends those words to the model.
+On Grok, save the TypeSafe key as `TYPESAFE_API_KEY` or a cwd `.env`, or with the CLI `key` command (a key or a `!` command, see [above](#fetch-the-key-with-a-command)) from a shell outside Grok. Do not type secrets after a Grok slash command; Grok appends those words to the model.
 
 ## If it does nothing
 
 | Symptom | Cause |
 | --- | --- |
-| `Key: missing` in `/compact-adviser status` (Pi, omp, Claude Code) or `/compact-adviser` (Grok) | No `TYPESAFE_API_KEY` in the launch environment, saved settings, or the session cwd's `./.env` |
+| `Key: missing` in `/compact-adviser status` (Pi, omp, Claude Code) or `/compact-adviser` (Grok) | No `TYPESAFE_API_KEY` in the launch environment, saved settings (or a saved key command that failed), or the session cwd's `./.env` |
 | No `/compact-adviser` command in Claude Code | `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` is not exactly `1` |
 | Command exists, no hint | Context is below the constant 40,000-token minimum, the session is not idle, or the last turn was not a settled final answer |
 | Claude Code: "nonessential traffic" | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` blocks plugin network requests |
@@ -160,7 +176,7 @@ On Grok, save the TypeSafe key as `TYPESAFE_API_KEY` or a cwd `.env`, or with th
 
 | Variable | Effect |
 | --- | --- |
-| `TYPESAFE_API_KEY` | The Jev key; a saved key or the session cwd's `./.env` is used when this is unset |
+| `TYPESAFE_API_KEY` | The Jev key; a saved key (or the output of a saved key command) or the session cwd's `./.env` is used when this is unset |
 | `TYPESAFE_BASE` | Replaces the TypeSafe API base URL, `https://api.typesafe.ai` by default; the request goes to `<base>/v1/systemone` with a trailing slash dropped. Read from the launch environment only, never a saved setting or `./.env`. It must be an `https` URL; plain `http` is accepted only for a loopback host (`127.0.0.1`, `[::1]`, `localhost`). Any other value, or one that carries credentials, a query or a fragment, is a configuration error: no request and no advice |
 | `COMPACT_ADVISER_DISABLE` | `1`, `true`, `yes` or `on` (any case) makes the session inert: no TypeSafe request, no hint, no automatic compaction, no command. It wins over a saved `hint` or `auto` mode |
 | `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` | Claude Code only; must be exactly `1` for the mod to load |
@@ -208,7 +224,7 @@ hint can never be fed back to the model.
 | --- | --- |
 | `/compact-adviser` (Pi, omp, and Claude Code) | Settings (mode, minimum, request log, TypeSafe API key) |
 | `/compact-adviser auto` / `hint` / `off` (Pi, omp, and Claude Code) | Save that mode; auto asks for first-use confirmation |
-| `/compact-adviser status` (Pi, omp, and Claude Code) | Mode, minimum, context, key source (`env` / `saved` / `.env` / `missing`), cooldown |
+| `/compact-adviser status` (Pi, omp, and Claude Code) | Mode, minimum, context, key source (`env` / `saved` / `command` / `.env` / `missing`), cooldown |
 | `/compact-adviser threshold 60000` (Pi, omp, and Claude Code) | Save an absolute token minimum |
 | `/compact-adviser snooze` / `dismiss` (Pi, omp, and Claude Code) | Suppress the next three exchanges, or clear the current hint |
 | `/compact-adviser` (Grok) | Show status; do not add arguments because Grok sends them to the model |

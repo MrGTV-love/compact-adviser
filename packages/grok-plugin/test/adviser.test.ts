@@ -341,6 +341,45 @@ test("request logging writes the request and the outcome, and never the key", as
   assert.ok(!readFileSync(path, "utf8").includes("tsk-test-key"));
 });
 
+test("a saved key command supplies the key, and neither it nor its output is logged", async (t) => {
+  const { l, fixture } = await judgeTurn(t);
+  writeFileSync(join(l.cwd, "key-source"), "tsk-from-command\n");
+  await runCli(["log", "on"], { lab: l });
+  const saved = await runCli(["key", "!cat key-source"], { lab: l });
+  assert.equal(saved.code, 0);
+  assert.ok(!saved.stdout.includes("tsk-from-command"));
+  const status = await runCli(["status"], { lab: l });
+  assert.match(status.stdout, /Key: command\./);
+  assert.ok(!status.stdout.includes("tsk-from-command"));
+
+  await runCli(["hook", "stop"], {
+    lab: l,
+    stdin: stopPayload(l),
+    env: { COMPACT_ADVISER_TEST_ENDPOINT: fixture.url },
+  });
+  assert.equal(fixture.bodies.length, 1);
+  const path = join(l.dataDir, `compact-adviser-requests-${l.sessionId}.jsonl`);
+  const logged = readFileSync(path, "utf8");
+  assert.ok(!logged.includes("tsk-from-command"));
+  assert.ok(!logged.includes("key-source"));
+  assert.ok(!fixture.bodies[0]?.includes("tsk-from-command"));
+});
+
+test("a saved key command that fails means no request and no key", async (t) => {
+  const { l, fixture } = await judgeTurn(t);
+  await runCli(["key", "!echo tsk-never-used >&2; exit 5"], { lab: l });
+  const stop = await runCli(["hook", "stop"], {
+    lab: l,
+    stdin: stopPayload(l),
+    env: { COMPACT_ADVISER_TEST_ENDPOINT: fixture.url },
+  });
+  assert.equal(stop.code, 0);
+  assert.equal(fixture.bodies.length, 0);
+  assert.ok(!stop.stdout.includes("tsk-never-used") && !stop.stderr.includes("tsk-never-used"));
+  const status = await runCli(["status"], { lab: l });
+  assert.match(status.stdout, /Key: missing\./);
+});
+
 test("session start writes launchers that resolve the currently installed plugin", async (t) => {
   const l = lab(t);
   await runCli(["hook", "session-start"], {

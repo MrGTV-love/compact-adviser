@@ -174,6 +174,18 @@ test("the CLI saves and clears a key without ever printing it", async () => {
   });
 });
 
+test("a saved key command is reported as its own source, and a failing one as missing", async () => {
+  await withLab(async (lab) => {
+    const store = new ConfigStore(adviserRoot({ CODEX_HOME: lab.home }));
+    store.update({ typesafeApiKey: "!echo tsk-from-command" });
+    const status = await run(["key", "status"], cli(lab));
+    assert.equal(status, "Key: command");
+    assert.ok(!status.includes("tsk-from-command"));
+    store.update({ typesafeApiKey: "!exit 1" });
+    assert.equal(await run(["key", "status"], cli(lab)), "Key: missing");
+  });
+});
+
 test("key set never writes the typed secret to the terminal", async () => {
   await withLab((lab) => {
     const secret = "tsk-must-never-echo";

@@ -28,6 +28,8 @@ export type Journal = {
   usageReads: number;
   fsReads: string[];
   fsWrites: { path: string; text: string }[];
+  /** Every `$.process.run` argv, in order. */
+  processRuns: (readonly string[])[];
 };
 
 export type Verdict = { completed?: number; handsOn?: number };
@@ -96,6 +98,8 @@ export type WorldOptions = {
   store?: Record<string, unknown>;
   /** Text `$.fs.read(".env")` should return; omit to treat the file as missing. */
   dotenv?: string;
+  /** What a saved key command (`$.process.run`) answers; a string is exit 0 with that stdout. */
+  command?: string | { exitCode: number; stdout: string } | "throw";
 };
 
 /** A transcript whose own text is well over the 20k-token useful-history floor. */
@@ -173,6 +177,7 @@ export function world(on: On, options: WorldOptions = {}): World {
     usageReads: 0,
     fsReads: [],
     fsWrites: [],
+    processRuns: [],
   };
   const jsonlFiles = new Map<string, string>();
   const rows = new Map<string, string | number | boolean>([
@@ -320,6 +325,24 @@ export function world(on: On, options: WorldOptions = {}): World {
       return { value: existing };
     }
     return next(e);
+  });
+  on("process.run", async (_$, e) => {
+    journal.processRuns.push(e.argv);
+    if (options.command === undefined || options.command === "throw") {
+      throw new Error("spawn failed");
+    }
+    const answer =
+      typeof options.command === "string"
+        ? { exitCode: 0, stdout: options.command }
+        : options.command;
+    return {
+      value: {
+        ...answer,
+        stderr: "",
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    };
   });
   on("fs.write", async (_$, e) => {
     const write = e as { path: string; text: string };

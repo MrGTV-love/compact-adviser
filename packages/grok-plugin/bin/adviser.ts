@@ -47,7 +47,13 @@ import {
   writeSettings,
 } from "../lib/config.ts";
 import { DISABLE_ENV, disabledByEnv } from "../lib/disable.ts";
-import { formatKeyStatus, parseDotenvKey, resolveTypesafeApiKey } from "../lib/env.ts";
+import {
+  formatKeyStatus,
+  parseDotenvKey,
+  resolveTypesafeApiKey,
+  runKeyCommand,
+  savedKeyCommand,
+} from "../lib/env.ts";
 import {
   floorFor,
   JudgeError,
@@ -150,11 +156,16 @@ function dotenvKey(cwd: string): string | undefined {
   }
 }
 
+/** A saved `!command` runs only when `TYPESAFE_API_KEY` is unset. */
 function resolveKey(settings: Settings, cwd: string) {
+  const command = process.env.TYPESAFE_API_KEY?.trim()
+    ? undefined
+    : savedKeyCommand(settings.typesafeApiKey);
   return resolveTypesafeApiKey(
     process.env.TYPESAFE_API_KEY,
     settings.typesafeApiKey,
     dotenvKey(cwd),
+    command === undefined ? undefined : runKeyCommand(command, cwd, process.env),
   );
 }
 

@@ -158,14 +158,15 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
       ctx.hasPendingMessages() ||
       ctx.ui.getEditorText?.().trim() ||
       c.mode === "off" ||
-      !key(ctx.cwd)?.trim() ||
       !usage ||
       usage.tokens === null ||
       !Number.isFinite(usage.tokens) ||
       !Number.isFinite(usage.contextWindow) ||
       usage.contextWindow <= 0 ||
       usage.tokens < c.minContextTokens ||
-      cooldownReason(s, usage.tokens, now())
+      cooldownReason(s, usage.tokens, now()) ||
+      // Last: a saved key command runs here, so every cheaper gate comes first.
+      !key(ctx.cwd)?.trim()
     )
       return undefined;
     return usage.tokens;
@@ -216,7 +217,8 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
     if (request || eligible(ctx, config, state) === undefined) return;
     const profile = parseProfile(config.profile);
     if (options.sources && !ompSources) throw new Error("omp source helpers unavailable");
-    const view = snapshot(ctx, [key(ctx.cwd), savedApiKey(store)], options.host, ompSources);
+    const apiKey = key(ctx.cwd)?.trim() ?? "";
+    const view = snapshot(ctx, [apiKey, savedApiKey(store)], options.host, ompSources);
     if (view.conversationTokens <= 20000 || view.checkpointKey === state.lastHintKey) return;
     let loggedBody: string | undefined;
     if (config.logRequests) {
@@ -235,12 +237,7 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
     const current = () =>
       !controller.signal.aborted && generation === epoch && sessionIdentity(ctx) === identity;
     try {
-      const result = await evaluate(
-        view.state,
-        key(ctx.cwd)?.trim() ?? "",
-        controller.signal,
-        profile,
-      );
+      const result = await evaluate(view.state, apiKey, controller.signal, profile);
       if (!current()) return;
       if (config.logRequests) {
         try {

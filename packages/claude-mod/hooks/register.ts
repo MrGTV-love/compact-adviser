@@ -37,8 +37,10 @@ import {
 import { disabledByEnv } from "../lib/disable.ts";
 import {
   formatKeyStatus,
+  keyFromCommandOutput,
   parseDotenvKey,
   resolveTypesafeApiKey,
+  savedKeyCommand,
   type TypesafeKeySource,
 } from "../lib/env.ts";
 import {
@@ -125,20 +127,42 @@ function isActivated($: EngineInterface): Promise<boolean> {
   return activation;
 }
 
-async function resolvedKey($: EngineInterface) {
+const KEY_COMMAND_TIMEOUT_MS = 10_000;
+
+/** Runs a saved key command; any failure (exit, timeout, unusable output) is no key. */
+async function runKeyCommand($: EngineInterface, command: string): Promise<string | undefined> {
+  if (command === "") return undefined;
+  try {
+    const result = await $.process.run(["/bin/sh", "-c", command], {
+      timeoutMs: KEY_COMMAND_TIMEOUT_MS,
+    });
+    return result.exitCode === 0 ? keyFromCommandOutput(result.stdout) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The key in effect. A saved `!command` runs only when the environment has no key, and
+ * not at all with `run` off (the settings view, which redraws often, names the source only).
+ */
+async function resolvedKey($: EngineInterface, run = true) {
   const fromEnv = await $.env.get("TYPESAFE_API_KEY");
   if (fromEnv !== undefined && fromEnv.trim() !== "") {
     return resolveTypesafeApiKey(fromEnv);
   }
   const saved = readSavedApiKey(await $.config.list(), loadedOptions);
-  if (saved) return resolveTypesafeApiKey(undefined, saved);
+  const command = savedKeyCommand(saved);
+  if (saved && command === undefined) return resolveTypesafeApiKey(undefined, saved);
+  if (command !== undefined && !run) return { value: undefined, source: "command" as const };
+  const fetched = command === undefined ? undefined : await runKeyCommand($, command);
   let dotenv: string | undefined;
   try {
     dotenv = parseDotenvKey(await $.fs.read(".env"), "TYPESAFE_API_KEY");
   } catch {
     dotenv = undefined;
   }
-  return resolveTypesafeApiKey(undefined, undefined, dotenv);
+  return resolveTypesafeApiKey(undefined, saved, dotenv, fetched);
 }
 
 async function apiKey($: EngineInterface): Promise<string> {
@@ -257,11 +281,12 @@ async function eligible(
     interactive &&
     !compacting &&
     config.mode !== "off" &&
-    (await apiKey($)) !== "" &&
     typeof tokens === "number" &&
     Number.isFinite(tokens) &&
     tokens >= config.minContextTokens &&
-    cooldownReason(state, tokens, now) === undefined
+    cooldownReason(state, tokens, now) === undefined &&
+    // Last: a saved key command runs here, so every cheaper gate comes first.
+    (await apiKey($)) !== ""
   );
 }
 
@@ -295,7 +320,7 @@ async function judgeCheckpoint($: EngineInterface, epoch: number): Promise<void>
       const endpoint = await judgeEndpoint($);
       result = await judge(
         view.state,
-        await apiKey($),
+        activeKey,
         {
           fetch: (url, init) => $.http.fetch(url, init),
           sleep: (ms) => $.clock.sleep(ms),
@@ -543,6 +568,7 @@ const MODE_LABELS: Record<Mode, string> = {
 const KEY_SOURCE_LABELS: Record<TypesafeKeySource, string> = {
   env: "from the environment",
   saved: "saved",
+  command: "from a command",
   ".env": "from .env",
   missing: "missing",
 };
@@ -556,6 +582,8 @@ function keyDetail(source: TypesafeKeySource, saved: boolean): string {
         : "In effect: TYPESAFE_API_KEY from the launch environment.";
     case "saved":
       return "In effect: the key saved here, for all sessions.";
+    case "command":
+      return "In effect: the output of the command saved here (a value starting with !), for all sessions.";
     case ".env":
       return "In effect: TYPESAFE_API_KEY from the .env file in the working directory.";
     default:
@@ -863,7 +891,7 @@ export const register: Register = (on, options) => {
         }),
       ]);
     }
-    const [rows, key] = await Promise.all([$.config.list(), resolvedKey($)]);
+    const [rows, key] = await Promise.all([$.config.list(), resolvedKey($, false)]);
     const savedKey = readSavedApiKey(rows, loadedOptions) !== undefined;
 
     /** A list of rows the ring moves through; the one at `focus` takes it first. */
