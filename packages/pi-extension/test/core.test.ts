@@ -539,7 +539,10 @@ test("cwd .env supplies TYPESAFE_API_KEY when process env is empty and is ignore
     value: "from-dotenv-last",
     source: ".env",
   });
-  assert.deepEqual(await resolveTypesafeApiKey({}, dir), { value: "from-dotenv-last", source: ".env" });
+  assert.deepEqual(await resolveTypesafeApiKey({}, dir), {
+    value: "from-dotenv-last",
+    source: ".env",
+  });
   assert.deepEqual(await resolveTypesafeApiKey({ TYPESAFE_API_KEY: "from-env" }, dir), {
     value: "from-env",
     source: "env",
@@ -548,7 +551,10 @@ test("cwd .env supplies TYPESAFE_API_KEY when process env is empty and is ignore
     value: "from-dotenv-last",
     source: ".env",
   });
-  assert.deepEqual(await resolveTypesafeApiKey({}, temp(t)), { value: undefined, source: "missing" });
+  assert.deepEqual(await resolveTypesafeApiKey({}, temp(t)), {
+    value: undefined,
+    source: "missing",
+  });
   assert.equal(parseDotenvKey("TYPESAFE_API_KEY=only\n", "TYPESAFE_API_KEY"), "only");
 });
 
@@ -584,10 +590,13 @@ test("a saved menu key sits between process env and cwd .env", async (t) => {
     value: "from-saved",
     source: "saved",
   });
-  assert.deepEqual(await resolveTypesafeApiKey({ TYPESAFE_API_KEY: "from-env" }, dir, "from-saved"), {
-    value: "from-env",
-    source: "env",
-  });
+  assert.deepEqual(
+    await resolveTypesafeApiKey({ TYPESAFE_API_KEY: "from-env" }, dir, "from-saved"),
+    {
+      value: "from-env",
+      source: "env",
+    },
+  );
   assert.deepEqual(await resolveTypesafeApiKey({ TYPESAFE_API_KEY: "   " }, dir, "from-saved"), {
     value: "from-saved",
     source: "saved",
@@ -616,16 +625,22 @@ test("a saved key starting with ! is a command whose trimmed stdout is the key",
   });
   // The command runs in the session's directory, so a relative path reads that folder.
   writeFileSync(join(dir, "secret.txt"), "from-relative-file\n");
-  assert.deepEqual(await key("!cat secret.txt"), { value: "from-relative-file", source: "command" });
+  assert.deepEqual(await key("!cat secret.txt"), {
+    value: "from-relative-file",
+    source: "command",
+  });
   // Nothing is cached: the next resolution runs the command again.
   writeFileSync(join(dir, "secret.txt"), "rotated\n");
   assert.deepEqual(await key("!cat secret.txt"), { value: "rotated", source: "command" });
   // A command outranks .env but not the environment, and the environment's win skips it.
   const marker = join(dir, "ran");
-  assert.deepEqual(await key(`!touch '${marker}'; echo from-command`, { TYPESAFE_API_KEY: "from-env" }), {
-    value: "from-env",
-    source: "env",
-  });
+  assert.deepEqual(
+    await key(`!touch '${marker}'; echo from-command`, { TYPESAFE_API_KEY: "from-env" }),
+    {
+      value: "from-env",
+      source: "env",
+    },
+  );
   assert.equal(existsSync(marker), false);
   assert.deepEqual(await key(`!touch '${marker}'; echo from-command`), {
     value: "from-command",

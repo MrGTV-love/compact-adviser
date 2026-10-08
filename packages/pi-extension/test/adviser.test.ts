@@ -701,7 +701,9 @@ test("a saved key command that fails leaves the adviser off without a request", 
   assert.ok(h.notifications.every((n) => !n.includes("tsk-never-used")));
 });
 
-test("input during command acquisition cancels settlement without blocking the event loop", { timeout: 5000 }, async (t) => {
+test("input during command acquisition cancels settlement without blocking the event loop", {
+  timeout: 5000,
+}, async (t) => {
   const previous = process.env.TYPESAFE_API_KEY;
   t.after(() => {
     if (previous === undefined) delete process.env.TYPESAFE_API_KEY;
@@ -711,7 +713,8 @@ test("input during command acquisition cancels settlement without blocking the e
   const h = harness(t);
   h.install("0.82.0", false);
   h.store.update({
-    typesafeApiKey: "!touch acquiring; while [ ! -f release ]; do sleep 0.01; done; echo tsk-command",
+    typesafeApiKey:
+      "!touch acquiring; while [ ! -f release ]; do sleep 0.01; done; echo tsk-command",
     logRequests: true,
   });
   h.enable("auto");

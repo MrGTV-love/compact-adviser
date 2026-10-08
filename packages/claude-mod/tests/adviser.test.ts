@@ -545,7 +545,7 @@ describe("turn-end gates", () => {
       key: undefined,
       savedKey: "!fetch-the-key",
       logRequests: true,
-      command: async () => ++acquisitions === 1 ? "tsk-once" : { exitCode: 1, stdout: "" },
+      command: async () => (++acquisitions === 1 ? "tsk-once" : { exitCode: 1, stdout: "" }),
     });
     await $.session.start(interactiveStart);
     await turnEnd($, w);
