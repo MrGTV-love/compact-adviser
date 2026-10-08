@@ -325,7 +325,7 @@ export function world(on: On, options: WorldOptions = {}): World {
     if (/compact-adviser-requests[^/]*\.jsonl$/.test(String(e.path))) {
       journal.fsReads.push(e.path);
       const existing = jsonlFiles.get(String(e.path));
-      if (existing === undefined) throw new Error("ENOENT");
+      if (existing === undefined) return { deny: "ENOENT" };
       return { value: existing };
     }
     return next(e);

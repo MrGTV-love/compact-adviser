@@ -5,6 +5,7 @@
 
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -341,28 +342,145 @@ test("request logging writes the request and the outcome, and never the key", as
   assert.ok(!readFileSync(path, "utf8").includes("tsk-test-key"));
 });
 
-test("a saved key command supplies the key, and neither it nor its output is logged", async (t) => {
-  const { l, fixture } = await judgeTurn(t);
-  writeFileSync(join(l.cwd, "key-source"), "tsk-from-command\n");
-  await runCli(["log", "on"], { lab: l });
-  const saved = await runCli(["key", "!cat key-source"], { lab: l });
-  assert.equal(saved.code, 0);
-  assert.ok(!saved.stdout.includes("tsk-from-command"));
-  const status = await runCli(["status"], { lab: l });
-  assert.match(status.stdout, /Key: command\./);
-  assert.ok(!status.stdout.includes("tsk-from-command"));
+test("saved key commands wait for recorded or estimated minimum context", async (t) => {
+  for (const recorded of [true, false]) {
+    await t.test(recorded ? "recorded tokens" : "missing usage", async (t) => {
+      const { l, fixture } = await judgeTurn(t, { tokens: 30000 });
+      if (!recorded) rmSync(join(l.sessionDir, "signals.json"));
+      await runCli(["key", "!printf x >> key-runs; printf command-key"], { lab: l });
+      const env = { COMPACT_ADVISER_TEST_ENDPOINT: fixture.url };
+      const stop = await runCli(["hook", "stop"], { lab: l, stdin: stopPayload(l), env });
+      assert.equal(stop.code, 0);
+      assert.equal(stop.stdout, "");
+      assert.ok(!existsSync(join(l.cwd, "key-runs")));
+      assert.equal(fixture.bodies.length, 0);
 
-  await runCli(["hook", "stop"], {
+      await runCli(["threshold", "25000"], { lab: l });
+      await runCli(["hook", "stop"], { lab: l, stdin: stopPayload(l), env });
+      assert.ok(!existsSync(join(l.cwd, "key-runs")));
+      assert.equal(fixture.bodies.length, 0);
+
+      await runCli(["hook", "stop"], {
+        lab: l,
+        stdin: stopPayload(l, { promptId: "prompt-2" }),
+        env,
+      });
+      assert.equal(readFileSync(join(l.cwd, "key-runs"), "utf8"), "x");
+      assert.equal(fixture.bodies.length, 1);
+      const state = JSON.parse(
+        readFileSync(join(l.dataDir, "sessions", `${l.sessionId}.json`), "utf8"),
+      ) as { completed: number; lastPromptId: string };
+      assert.equal(state.completed, 2);
+      assert.equal(state.lastPromptId, "prompt-2");
+    });
+  }
+});
+
+test("saved key commands wait for the minimum conversation despite high recorded usage", async (t) => {
+  const { l, fixture } = await judgeTurn(t);
+  writeHistory(l, [
+    { type: "user", content: [{ type: "text", text: "Fix the parser." }] },
+    { type: "assistant", content: "Done." },
+  ]);
+  await runCli(["key", "!printf x >> key-runs; printf command-key"], { lab: l });
+  const stop = await runCli(["hook", "stop"], {
     lab: l,
     stdin: stopPayload(l),
     env: { COMPACT_ADVISER_TEST_ENDPOINT: fixture.url },
   });
+  assert.equal(stop.code, 0);
+  assert.equal(stop.stdout, "");
+  assert.ok(!existsSync(join(l.cwd, "key-runs")));
+  assert.equal(fixture.bodies.length, 0);
+});
+
+test("saved key commands do not run during snooze or backoff with recorded or estimated usage", async (t) => {
+  for (const cooldown of ["snooze", "backoff"]) {
+    for (const recorded of [true, false]) {
+      await t.test(`${cooldown}, ${recorded ? "recorded tokens" : "missing usage"}`, async (t) => {
+        const { l, fixture } = await judgeTurn(t);
+        if (!recorded) {
+          rmSync(join(l.sessionDir, "signals.json"));
+          await runCli(["threshold", "25000"], { lab: l });
+        }
+        await runCli(["key", "!printf x >> key-runs; printf command-key"], { lab: l });
+        if (cooldown === "backoff") fixture.status = 401;
+        const env = { COMPACT_ADVISER_TEST_ENDPOINT: fixture.url };
+        await runCli(["hook", "stop"], { lab: l, stdin: stopPayload(l), env });
+        assert.equal(readFileSync(join(l.cwd, "key-runs"), "utf8"), "x");
+        assert.equal(fixture.bodies.length, 1);
+        if (cooldown === "snooze") await runCli(["snooze"], { lab: l });
+        fixture.status = undefined;
+        writeHistory(l, [...workedHistory("one"), ...workedHistory("two").slice(1)]);
+        const stop = await runCli(["hook", "stop"], {
+          lab: l,
+          stdin: stopPayload(l, { promptId: "prompt-2" }),
+          env,
+        });
+        assert.equal(stop.code, 0);
+        assert.equal(stop.stdout, "");
+        assert.equal(readFileSync(join(l.cwd, "key-runs"), "utf8"), "x");
+        assert.equal(fixture.bodies.length, 1);
+        const state = JSON.parse(
+          readFileSync(join(l.dataDir, "sessions", `${l.sessionId}.json`), "utf8"),
+        ) as { completed: number; lastPromptId: string };
+        assert.equal(state.completed, 2);
+        assert.equal(state.lastPromptId, "prompt-2");
+      });
+    }
+  }
+});
+
+test("a saved key command runs once per eligible Stop and authenticates without exposing its output", async (t) => {
+  const { l, fixture } = await judgeTurn(t);
+  const authorizations: (string | undefined)[] = [];
+  const server = createServer((request, response) => {
+    authorizations.push(request.headers.authorization);
+    const upstream = httpRequest(
+      fixture.url,
+      { method: request.method, headers: request.headers },
+      (fixtureResponse) => {
+        response.writeHead(fixtureResponse.statusCode ?? 500, fixtureResponse.headers);
+        fixtureResponse.pipe(response);
+      },
+    );
+    request.pipe(upstream);
+  });
+  t.after(() => server.close());
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const endpoint = `http://127.0.0.1:${address.port}/v1/systemone`;
+  writeFileSync(join(l.cwd, "key-source"), "opaque-command-output\n");
+  writeHistory(l, [
+    ...workedHistory(),
+    { type: "assistant", content: "Done. The parser is fixed. opaque-command-output" },
+  ]);
+  await runCli(["log", "on"], { lab: l });
+  const saved = await runCli(["key", "!printf x >> key-runs; cat key-source"], { lab: l });
+  assert.equal(saved.code, 0);
+  assert.ok(!saved.stdout.includes("opaque-command-output"));
+  const status = await runCli(["status"], { lab: l });
+  assert.match(status.stdout, /Key: command\./);
+  assert.ok(!status.stdout.includes("opaque-command-output"));
+  assert.equal(readFileSync(join(l.cwd, "key-runs"), "utf8"), "x");
+
+  const stop = await runCli(["hook", "stop"], {
+    lab: l,
+    stdin: stopPayload(l),
+    env: { COMPACT_ADVISER_TEST_ENDPOINT: endpoint },
+  });
+  assert.equal(stop.code, 0);
+  assert.equal(stop.stdout, "");
+  assert.equal(readFileSync(join(l.cwd, "key-runs"), "utf8"), "xx");
+  assert.deepEqual(authorizations, ["Bearer opaque-command-output"]);
   assert.equal(fixture.bodies.length, 1);
   const path = join(l.dataDir, `compact-adviser-requests-${l.sessionId}.jsonl`);
   const logged = readFileSync(path, "utf8");
-  assert.ok(!logged.includes("tsk-from-command"));
+  assert.ok(!logged.includes("opaque-command-output"));
   assert.ok(!logged.includes("key-source"));
-  assert.ok(!fixture.bodies[0]?.includes("tsk-from-command"));
+  assert.ok(!fixture.bodies[0]?.includes("opaque-command-output"));
+  assert.match(fixture.bodies[0] ?? "", /\[REDACTED\]/);
 });
 
 test("a saved key command that fails means no request and no key", async (t) => {

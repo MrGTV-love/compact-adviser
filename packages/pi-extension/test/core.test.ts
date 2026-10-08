@@ -529,37 +529,37 @@ test("judgment-failure notices explain the skip and which kinds can be temporary
   assert.match(JUDGE_UNAVAILABLE_MESSAGE, /can be temporary/);
 });
 
-test("cwd .env supplies TYPESAFE_API_KEY when process env is empty and is ignored when env is set", (t) => {
+test("cwd .env supplies TYPESAFE_API_KEY when process env is empty and is ignored when env is set", async (t) => {
   const dir = temp(t);
   writeFileSync(
     join(dir, ".env"),
     "# TYPESAFE_API_KEY=commented\n\nOTHER=nope\nTYPESAFE_API_KEY=from-dotenv\nTYPESAFE_API_KEY=from-dotenv-last\n",
   );
-  assert.deepEqual(resolveTypesafeApiKey({ TYPESAFE_API_KEY: "" }, dir), {
+  assert.deepEqual(await resolveTypesafeApiKey({ TYPESAFE_API_KEY: "" }, dir), {
     value: "from-dotenv-last",
     source: ".env",
   });
-  assert.deepEqual(resolveTypesafeApiKey({}, dir), { value: "from-dotenv-last", source: ".env" });
-  assert.deepEqual(resolveTypesafeApiKey({ TYPESAFE_API_KEY: "from-env" }, dir), {
+  assert.deepEqual(await resolveTypesafeApiKey({}, dir), { value: "from-dotenv-last", source: ".env" });
+  assert.deepEqual(await resolveTypesafeApiKey({ TYPESAFE_API_KEY: "from-env" }, dir), {
     value: "from-env",
     source: "env",
   });
-  assert.deepEqual(resolveTypesafeApiKey({ TYPESAFE_API_KEY: "   " }, dir), {
+  assert.deepEqual(await resolveTypesafeApiKey({ TYPESAFE_API_KEY: "   " }, dir), {
     value: "from-dotenv-last",
     source: ".env",
   });
-  assert.deepEqual(resolveTypesafeApiKey({}, temp(t)), { value: undefined, source: "missing" });
+  assert.deepEqual(await resolveTypesafeApiKey({}, temp(t)), { value: undefined, source: "missing" });
   assert.equal(parseDotenvKey("TYPESAFE_API_KEY=only\n", "TYPESAFE_API_KEY"), "only");
 });
 
-test("cwd .env accepts export, declare -x, and one matching quote layer", (t) => {
+test("cwd .env accepts export, declare -x, and one matching quote layer", async (t) => {
   const dir = temp(t);
   writeFileSync(join(dir, ".env"), 'declare -x TYPESAFE_API_KEY="from-declare"\n');
-  assert.deepEqual(resolveTypesafeApiKey({}, dir), { value: "from-declare", source: ".env" });
+  assert.deepEqual(await resolveTypesafeApiKey({}, dir), { value: "from-declare", source: ".env" });
   writeFileSync(join(dir, ".env"), "export TYPESAFE_API_KEY='from-export'\n");
-  assert.deepEqual(resolveTypesafeApiKey({}, dir), { value: "from-export", source: ".env" });
+  assert.deepEqual(await resolveTypesafeApiKey({}, dir), { value: "from-export", source: ".env" });
   writeFileSync(join(dir, ".env"), "export TYPESAFE_API_KEY=from-export-plain\n");
-  assert.deepEqual(resolveTypesafeApiKey({ TYPESAFE_API_KEY: "from-env" }, dir), {
+  assert.deepEqual(await resolveTypesafeApiKey({ TYPESAFE_API_KEY: "from-env" }, dir), {
     value: "from-env",
     source: "env",
   });
@@ -577,32 +577,32 @@ test("cwd .env accepts export, declare -x, and one matching quote layer", (t) =>
   );
 });
 
-test("a saved menu key sits between process env and cwd .env", (t) => {
+test("a saved menu key sits between process env and cwd .env", async (t) => {
   const dir = temp(t);
   writeFileSync(join(dir, ".env"), "TYPESAFE_API_KEY=from-dotenv\n");
-  assert.deepEqual(resolveTypesafeApiKey({}, dir, "from-saved"), {
+  assert.deepEqual(await resolveTypesafeApiKey({}, dir, "from-saved"), {
     value: "from-saved",
     source: "saved",
   });
-  assert.deepEqual(resolveTypesafeApiKey({ TYPESAFE_API_KEY: "from-env" }, dir, "from-saved"), {
+  assert.deepEqual(await resolveTypesafeApiKey({ TYPESAFE_API_KEY: "from-env" }, dir, "from-saved"), {
     value: "from-env",
     source: "env",
   });
-  assert.deepEqual(resolveTypesafeApiKey({ TYPESAFE_API_KEY: "   " }, dir, "from-saved"), {
+  assert.deepEqual(await resolveTypesafeApiKey({ TYPESAFE_API_KEY: "   " }, dir, "from-saved"), {
     value: "from-saved",
     source: "saved",
   });
-  assert.deepEqual(resolveTypesafeApiKey({}, dir, "   "), {
+  assert.deepEqual(await resolveTypesafeApiKey({}, dir, "   "), {
     value: "from-dotenv",
     source: ".env",
   });
-  assert.deepEqual(resolveTypesafeApiKey({}, temp(t), undefined), {
+  assert.deepEqual(await resolveTypesafeApiKey({}, temp(t), undefined), {
     value: undefined,
     source: "missing",
   });
 });
 
-test("a saved key starting with ! is a command whose trimmed stdout is the key", (t) => {
+test("a saved key starting with ! is a command whose trimmed stdout is the key", async (t) => {
   const dir = temp(t);
   writeFileSync(join(dir, ".env"), "TYPESAFE_API_KEY=from-dotenv\n");
   const key = (saved: string, env: NodeJS.ProcessEnv = {}) =>
@@ -610,31 +610,31 @@ test("a saved key starting with ! is a command whose trimmed stdout is the key",
   assert.equal(savedKeyCommand("tsk-plain"), undefined);
   assert.equal(savedKeyCommand("  !  echo hi  "), "echo hi");
   assert.equal(savedKeyCommand("!"), "");
-  assert.deepEqual(key("!printf '  from-command\\n\\n'"), {
+  assert.deepEqual(await key("!printf '  from-command\\n\\n'"), {
     value: "from-command",
     source: "command",
   });
   // The command runs in the session's directory, so a relative path reads that folder.
   writeFileSync(join(dir, "secret.txt"), "from-relative-file\n");
-  assert.deepEqual(key("!cat secret.txt"), { value: "from-relative-file", source: "command" });
+  assert.deepEqual(await key("!cat secret.txt"), { value: "from-relative-file", source: "command" });
   // Nothing is cached: the next resolution runs the command again.
   writeFileSync(join(dir, "secret.txt"), "rotated\n");
-  assert.deepEqual(key("!cat secret.txt"), { value: "rotated", source: "command" });
+  assert.deepEqual(await key("!cat secret.txt"), { value: "rotated", source: "command" });
   // A command outranks .env but not the environment, and the environment's win skips it.
   const marker = join(dir, "ran");
-  assert.deepEqual(key(`!touch '${marker}'; echo from-command`, { TYPESAFE_API_KEY: "from-env" }), {
+  assert.deepEqual(await key(`!touch '${marker}'; echo from-command`, { TYPESAFE_API_KEY: "from-env" }), {
     value: "from-env",
     source: "env",
   });
   assert.equal(existsSync(marker), false);
-  assert.deepEqual(key(`!touch '${marker}'; echo from-command`), {
+  assert.deepEqual(await key(`!touch '${marker}'; echo from-command`), {
     value: "from-command",
     source: "command",
   });
   assert.equal(existsSync(marker), true);
 });
 
-test("a saved key command that fails is no key and never falls back to its own text", (t) => {
+test("a saved key command that fails is no key and never falls back to its own text", async (t) => {
   const dir = temp(t);
   for (const saved of [
     "!exit 3",
@@ -646,43 +646,43 @@ test("a saved key command that fails is no key and never falls back to its own t
     "!printf 'two\\nlines'",
     `!printf '%${MAX_SAVED_API_KEY_LENGTH + 1}s' x | tr ' ' k`,
   ]) {
-    assert.deepEqual(resolveTypesafeApiKey({}, temp(t), saved), {
+    assert.deepEqual(await resolveTypesafeApiKey({}, temp(t), saved), {
       value: undefined,
       source: "missing",
     });
   }
   // The key the command would have printed is never taken from the command text itself.
-  assert.deepEqual(resolveTypesafeApiKey({}, dir, "!echo tsk-secret >&2; exit 1"), {
+  assert.deepEqual(await resolveTypesafeApiKey({}, dir, "!echo tsk-secret >&2; exit 1"), {
     value: undefined,
     source: "missing",
   });
   // A failed command falls through to the cwd .env, like any other empty source.
   writeFileSync(join(dir, ".env"), "TYPESAFE_API_KEY=from-dotenv\n");
-  assert.deepEqual(resolveTypesafeApiKey({}, dir, "!exit 1"), {
+  assert.deepEqual(await resolveTypesafeApiKey({}, dir, "!exit 1"), {
     value: "from-dotenv",
     source: ".env",
   });
   assert.equal(keyFromCommandOutput("tsk\u0000x"), undefined);
 });
 
-test("a command in .env or the environment is a literal key, never run", (t) => {
+test("a command in .env or the environment is a literal key, never run", async (t) => {
   const dir = temp(t);
   const marker = join(dir, "ran");
   writeFileSync(join(dir, ".env"), `TYPESAFE_API_KEY=!touch '${marker}'\n`);
-  assert.deepEqual(resolveTypesafeApiKey({}, dir), {
+  assert.deepEqual(await resolveTypesafeApiKey({}, dir), {
     value: `!touch '${marker}'`,
     source: ".env",
   });
-  assert.deepEqual(resolveTypesafeApiKey({ TYPESAFE_API_KEY: `!touch '${marker}'` }, dir), {
+  assert.deepEqual(await resolveTypesafeApiKey({ TYPESAFE_API_KEY: `!touch '${marker}'` }, dir), {
     value: `!touch '${marker}'`,
     source: "env",
   });
   assert.equal(existsSync(marker), false);
 });
 
-test("a hanging saved key command is stopped and yields no key", { timeout: 30000 }, (t) => {
+test("a hanging saved key command is stopped and yields no key", { timeout: 30000 }, async (t) => {
   const started = Date.now();
-  assert.deepEqual(resolveTypesafeApiKey({}, temp(t), "!sleep 60; echo late"), {
+  assert.deepEqual(await resolveTypesafeApiKey({}, temp(t), "!sleep 60; echo late"), {
     value: undefined,
     source: "missing",
   });

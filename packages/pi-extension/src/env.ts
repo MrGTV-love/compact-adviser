@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -71,27 +71,49 @@ export function keyFromCommandOutput(stdout: string): string | undefined {
  * failure: a non-zero exit, a timeout, or unusable output. Nothing the command writes is
  * kept, logged, or cached.
  */
-export function runKeyCommand(
+export async function runKeyCommand(
   command: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
-): string | undefined {
+): Promise<string | undefined> {
   if (command === "") return undefined;
+  const { promise, resolve } = Promise.withResolvers<string | undefined>();
+  let child: ChildProcess;
   try {
-    const result = spawnSync("/bin/sh", ["-c", command], {
+    child = spawn("/bin/sh", ["-c", command], {
       cwd,
       env,
-      encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
-      timeout: KEY_COMMAND_TIMEOUT_MS,
-      maxBuffer: KEY_COMMAND_MAX_BYTES,
       windowsHide: true,
     });
-    if (result.error || result.status !== 0) return undefined;
-    return keyFromCommandOutput(result.stdout);
   } catch {
     return undefined;
   }
+  let stdout = "";
+  let bytes = 0;
+  let finished = false;
+  const finish = (value: string | undefined) => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timer);
+    child.stdout?.destroy();
+    resolve(value);
+  };
+  const timer = setTimeout(() => {
+    child.kill("SIGKILL");
+    finish(undefined);
+  }, KEY_COMMAND_TIMEOUT_MS);
+  child.stdout?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => {
+    bytes += Buffer.byteLength(chunk);
+    if (bytes > KEY_COMMAND_MAX_BYTES) {
+      child.kill("SIGKILL");
+      finish(undefined);
+    } else stdout += chunk;
+  });
+  child.on("error", () => finish(undefined));
+  child.on("close", (code) => finish(code === 0 ? keyFromCommandOutput(stdout) : undefined));
+  return promise;
 }
 
 /**
@@ -99,16 +121,16 @@ export function runKeyCommand(
  * run only when the environment has none), then `TYPESAFE_API_KEY` from `.env` in `cwd`.
  * A missing file or a failed command is skipped; the value is never logged.
  */
-export function resolveTypesafeApiKey(
+export async function resolveTypesafeApiKey(
   env: NodeJS.ProcessEnv = process.env,
   cwd: string = process.cwd(),
   saved?: string,
-): ResolvedTypesafeApiKey {
+): Promise<ResolvedTypesafeApiKey> {
   const fromEnv = nonempty(env.TYPESAFE_API_KEY);
   if (fromEnv !== undefined) return { value: fromEnv, source: "env" };
   const command = savedKeyCommand(saved);
   if (command !== undefined) {
-    const fromCommand = runKeyCommand(command, cwd, env);
+    const fromCommand = await runKeyCommand(command, cwd, env);
     if (fromCommand !== undefined) return { value: fromCommand, source: "command" };
   } else {
     const fromSaved = nonempty(saved);

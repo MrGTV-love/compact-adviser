@@ -165,10 +165,6 @@ async function resolvedKey($: EngineInterface, run = true) {
   return resolveTypesafeApiKey(undefined, saved, dotenv, fetched);
 }
 
-async function apiKey($: EngineInterface): Promise<string> {
-  return (await resolvedKey($)).value?.trim() ?? "";
-}
-
 /** A loopback-only endpoint override for the live regression's local TypeSafe fixture. */
 async function testEndpoint($: EngineInterface): Promise<string | undefined> {
   const value = await $.env.get("COMPACT_ADVISER_TEST_ENDPOINT");
@@ -271,13 +267,12 @@ function usageFraction(context: {
   return context.tokens / denominator;
 }
 
-async function eligible(
-  $: EngineInterface,
+function eligible(
   config: Config,
   state: SessionState,
   tokens: number | undefined,
   now: number,
-): Promise<boolean> {
+): boolean {
   return (
     interactive &&
     !compacting &&
@@ -285,9 +280,7 @@ async function eligible(
     typeof tokens === "number" &&
     Number.isFinite(tokens) &&
     tokens >= config.minContextTokens &&
-    cooldownReason(state, tokens, now) === undefined &&
-    // Last: a saved key command runs here, so every cheaper gate comes first.
-    (await apiKey($)) !== ""
+    cooldownReason(state, tokens, now) === undefined
   );
 }
 
@@ -299,12 +292,13 @@ async function judgeCheckpoint($: EngineInterface, epoch: number): Promise<void>
     const initial = await loadConfig($);
     if (epoch !== generation) return;
     const profile = parseProfile(initial.profile);
-    const [messages, activeKey, rows] = await Promise.all([
+    const [messages, credential, rows] = await Promise.all([
       $.session.messages(),
-      apiKey($),
+      resolvedKey($),
       $.config.list(),
     ]);
-    if (epoch !== generation) return;
+    const activeKey = credential.value?.trim() ?? "";
+    if (epoch !== generation || !activeKey) return;
     const view = snapshot(messages, [activeKey, readSavedApiKey(rows, loadedOptions)]);
     if (view.conversationTokens <= 20000) return;
     const fingerprint = await checkpointKey(view.checkpointText);
@@ -376,10 +370,9 @@ async function judgeCheckpoint($: EngineInterface, epoch: number): Promise<void>
     if (
       JSON.stringify(latest) !== JSON.stringify(initial) ||
       epoch !== generation ||
-      !(await eligible($, latest, current, context.tokens, now))
+      !eligible(latest, current, context.tokens, now)
     )
       return;
-    if (epoch !== generation) return;
     let state: SessionState = { ...current, failures: 0, retryAfter: 0, updatedAt: now };
     const auto = latest.mode === "auto";
     if (!qualifies(result, usageFraction(context), profile) || (auto && !latest.autoAcknowledged)) {
@@ -458,9 +451,7 @@ async function settle($: EngineInterface): Promise<void> {
       notice($, error instanceof Error ? error.message : "Cannot read compact-adviser settings.");
     return;
   }
-  if (epoch !== generation || judging || !(await eligible($, config, state, context.tokens, now)))
-    return;
-  if (epoch !== generation) return;
+  if (epoch !== generation || judging || !eligible(config, state, context.tokens, now)) return;
   $.clock.after(0, () => {
     void judgeCheckpoint($, epoch).catch(() => {
       if (epoch === generation)
@@ -585,7 +576,7 @@ const MODE_LABELS: Record<Mode, string> = {
 const KEY_SOURCE_LABELS: Record<TypesafeKeySource, string> = {
   env: "from the environment",
   saved: "saved",
-  command: "from a command",
+  command: "command configured (unverified)",
   ".env": "from .env",
   missing: "missing",
 };
@@ -600,7 +591,7 @@ function keyDetail(source: TypesafeKeySource, saved: boolean): string {
     case "saved":
       return "In effect: the key saved here, for all sessions.";
     case "command":
-      return "In effect: the output of the command saved here (a value starting with !), for all sessions.";
+      return "A key command is configured but has not been verified here. Status runs it to report the effective source; if it fails, the cwd .env still applies.";
     case ".env":
       return "In effect: TYPESAFE_API_KEY from the .env file in the working directory.";
     default:
