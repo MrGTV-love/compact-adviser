@@ -509,8 +509,14 @@ describe("turn-end gates", () => {
   });
 
   test("a new turn during command acquisition invalidates the checkpoint", async ($, on) => {
-    const started = Promise.withResolvers<void>();
-    const released = Promise.withResolvers<void>();
+    let markStarted: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const w = world(on, {
       key: undefined,
       savedKey: "!fetch-the-key",
@@ -518,17 +524,17 @@ describe("turn-end gates", () => {
       mode: "auto",
       consent: { autoAcknowledged: true },
       command: async () => {
-        started.resolve();
-        await released.promise;
+        markStarted();
+        await released;
         return "tsk-from-command\n";
       },
     });
     await $.session.start(interactiveStart);
     await $.turn.complete(answered());
     await w.clock.settle();
-    await started.promise;
+    await started;
     await $.turn.start({ turnId: "t2", origin: { kind: "composer" } } as never);
-    released.resolve();
+    release();
     await drain(w);
     expect(w.journal.requests).toHaveLength(0);
     expect(w.journal.fsWrites).toHaveLength(0);
