@@ -217,7 +217,7 @@ async function sessionLogPath($: EngineInterface): Promise<string> {
   return requestLogPath(await logHome($), await $.session.id());
 }
 
-async function appendTypeSafeLog($: EngineInterface, line: string): Promise<void> {
+async function appendTypeSafeLog($: EngineInterface, line: string, epoch: number): Promise<void> {
   const path = await sessionLogPath($);
   let existing = "";
   try {
@@ -225,6 +225,7 @@ async function appendTypeSafeLog($: EngineInterface, line: string): Promise<void
   } catch {
     existing = "";
   }
+  if (epoch !== generation) return;
   await $.fs.write(path, `${existing}${line}`);
 }
 
@@ -296,28 +297,33 @@ async function judgeCheckpoint($: EngineInterface, epoch: number): Promise<void>
   judging = true;
   try {
     const initial = await loadConfig($);
+    if (epoch !== generation) return;
     const profile = parseProfile(initial.profile);
     const [messages, activeKey, rows] = await Promise.all([
       $.session.messages(),
       apiKey($),
       $.config.list(),
     ]);
+    if (epoch !== generation) return;
     const view = snapshot(messages, [activeKey, readSavedApiKey(rows, loadedOptions)]);
     if (view.conversationTokens <= 20000) return;
     const fingerprint = await checkpointKey(view.checkpointText);
     if ((await loadState($)).state.lastHintKey === fingerprint) return;
+    if (epoch !== generation) return;
     let loggedBody: string | undefined;
-    if (initial.logRequests) {
-      try {
-        loggedBody = requestBody(view.state, profile);
-        await appendTypeSafeLog($, requestLogLine(loggedBody));
-      } catch {
-        // Request logging must not replace or delay the judgment.
-      }
-    }
     let result: Awaited<ReturnType<typeof judge>>;
     try {
       const endpoint = await judgeEndpoint($);
+      if (epoch !== generation) return;
+      if (initial.logRequests) {
+        try {
+          loggedBody = requestBody(view.state, profile);
+          await appendTypeSafeLog($, requestLogLine(loggedBody), epoch);
+        } catch {
+          // Request logging must not replace or delay the judgment.
+        }
+      }
+      if (epoch !== generation) return;
       result = await judge(
         view.state,
         activeKey,
@@ -332,13 +338,15 @@ async function judgeCheckpoint($: EngineInterface, epoch: number): Promise<void>
       if (epoch !== generation) return;
       if (initial.logRequests) {
         try {
-          await appendTypeSafeLog($, errorLogLine(loggedJudgeErrorKind(error), loggedBody));
+          await appendTypeSafeLog($, errorLogLine(loggedJudgeErrorKind(error), loggedBody), epoch);
         } catch {
           // Error logging must not replace backoff.
         }
       }
       const { key, state } = await loadState($);
-      await $.store.set(key, backoff(state, await $.clock.now()));
+      const now = await $.clock.now();
+      if (epoch !== generation) return;
+      await $.store.set(key, backoff(state, now));
       notice($, judgeFailureMessage(error));
       return;
     }
@@ -347,6 +355,7 @@ async function judgeCheckpoint($: EngineInterface, epoch: number): Promise<void>
     const { key, state: current } = await loadState($);
     const now = await $.clock.now();
     const { context } = await $.session.usage({ breakdown: "summary" });
+    if (epoch !== generation) return;
     if (initial.logRequests) {
       try {
         await appendTypeSafeLog(
@@ -358,6 +367,7 @@ async function judgeCheckpoint($: EngineInterface, epoch: number): Promise<void>
             undefined,
             profile,
           ),
+          epoch,
         );
       } catch {
         // Response logging must not replace the gate decision.
@@ -365,9 +375,11 @@ async function judgeCheckpoint($: EngineInterface, epoch: number): Promise<void>
     }
     if (
       JSON.stringify(latest) !== JSON.stringify(initial) ||
+      epoch !== generation ||
       !(await eligible($, latest, current, context.tokens, now))
     )
       return;
+    if (epoch !== generation) return;
     let state: SessionState = { ...current, failures: 0, retryAfter: 0, updatedAt: now };
     const auto = latest.mode === "auto";
     if (!qualifies(result, usageFraction(context), profile) || (auto && !latest.autoAcknowledged)) {
@@ -431,24 +443,29 @@ async function judgeCheckpoint($: EngineInterface, epoch: number): Promise<void>
 
 /** The synchronous half of a turn end: count the exchange and run the cheap gates. */
 async function settle($: EngineInterface): Promise<void> {
+  const epoch = generation;
   const { context } = await $.session.usage();
   const now = await $.clock.now();
   const { key, state: stored } = await loadState($);
   const state = completeExchange(stored, context.tokens, now);
+  if (epoch !== generation) return;
   await $.store.set(key, state);
   let config: Config;
   try {
     config = await loadConfig($);
   } catch (error) {
-    notice($, error instanceof Error ? error.message : "Cannot read compact-adviser settings.");
+    if (epoch === generation)
+      notice($, error instanceof Error ? error.message : "Cannot read compact-adviser settings.");
     return;
   }
-  if (judging || !(await eligible($, config, state, context.tokens, now))) return;
-  const epoch = generation;
+  if (epoch !== generation || judging || !(await eligible($, config, state, context.tokens, now)))
+    return;
+  if (epoch !== generation) return;
   $.clock.after(0, () => {
-    void judgeCheckpoint($, epoch).catch(() =>
-      notice($, "Compact adviser could not inspect this checkpoint; context left unchanged."),
-    );
+    void judgeCheckpoint($, epoch).catch(() => {
+      if (epoch === generation)
+        notice($, "Compact adviser could not inspect this checkpoint; context left unchanged.");
+    });
   });
 }
 

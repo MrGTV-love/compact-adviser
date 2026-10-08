@@ -99,7 +99,11 @@ export type WorldOptions = {
   /** Text `$.fs.read(".env")` should return; omit to treat the file as missing. */
   dotenv?: string;
   /** What a saved key command (`$.process.run`) answers; a string is exit 0 with that stdout. */
-  command?: string | { exitCode: number; stdout: string } | "throw";
+  command?:
+    | string
+    | { exitCode: number; stdout: string }
+    | "throw"
+    | (() => Promise<string | { exitCode: number; stdout: string }>);
 };
 
 /** A transcript whose own text is well over the 20k-token useful-history floor. */
@@ -331,10 +335,9 @@ export function world(on: On, options: WorldOptions = {}): World {
     if (options.command === undefined || options.command === "throw") {
       throw new Error("spawn failed");
     }
-    const answer =
-      typeof options.command === "string"
-        ? { exitCode: 0, stdout: options.command }
-        : options.command;
+    const command =
+      typeof options.command === "function" ? await options.command() : options.command;
+    const answer = typeof command === "string" ? { exitCode: 0, stdout: command } : command;
     return {
       value: {
         ...answer,

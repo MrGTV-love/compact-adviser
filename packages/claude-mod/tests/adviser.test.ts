@@ -512,6 +512,56 @@ describe("turn-end gates", () => {
     expect(hinted(w)).toBe(false);
   });
 
+  for (const [stage, acquisition] of [
+    ["eligibility", 1],
+    ["request preparation", 2],
+    ["result eligibility", 3],
+  ] as const) {
+    test(`a new turn during key acquisition for ${stage} invalidates the checkpoint`, async ($, on) => {
+      let started: () => void = () => undefined;
+      const commandStarted = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      let release: () => void = () => undefined;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let acquisitions = 0;
+      const w = world(on, {
+        key: undefined,
+        savedKey: "!fetch-the-key",
+        logRequests: true,
+        mode: "auto",
+        consent: { autoAcknowledged: true },
+        command: async () => {
+          if (++acquisitions === acquisition) {
+            started();
+            await released;
+          }
+          return "tsk-from-command\n";
+        },
+      });
+      await $.session.start(interactiveStart);
+      const completed = $.turn.complete(answered());
+      if (acquisition > 1) {
+        await completed;
+        await w.clock.settle();
+      }
+      await commandStarted;
+      await $.turn.start({ turnId: "t2", origin: { kind: "composer" } } as never);
+      release();
+      await completed;
+      await drain(w);
+      expect(w.journal.requests).toHaveLength(acquisition === 3 ? 1 : 0);
+      expect(w.journal.fsWrites).toHaveLength(acquisition === 3 ? 2 : 0);
+      expect(w.journal.compactions).toHaveLength(0);
+      expect(hinted(w)).toBe(false);
+      await turnEnd($, w);
+      expect(w.journal.requests).toHaveLength(acquisition === 3 ? 2 : 1);
+      expect(w.journal.compactions).toHaveLength(1);
+    });
+  }
+
   test("a turn that starts while TypeSafe answers discards the verdict", async ($, on) => {
     const w = world(on);
     let markRequestStarted: () => void = () => undefined;
