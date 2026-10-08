@@ -380,15 +380,17 @@ try {
   pass("request logging is enabled by arrows and Enter alone through the real settings pane");
 
   step = "escape back";
-  // After the save the ring is back on the row that was opened; Escape inside a view returns
-  // to the list with the keyboard, and the list then closes on Escape.
-  await moveTo("Log TypeSafe requests");
-  key("Enter");
-  await waitText("● On");
-  key("Escape");
-  await waitText("↑↓ move · Enter select · Esc close");
-  await moveTo("Log TypeSafe requests", "Up");
-  pass("Escape in a view returns to the list, keeping the keyboard and the row");
+  // Every detail view uses the same close handoff. After Escape, navigate to another
+  // row and open it: a restored highlight alone does not prove the pane kept the keys.
+  for (const row of ["Log TypeSafe requests", "TypeSafe API key", "Mode", "Minimum context"]) {
+    await moveTo(row);
+    key("Enter");
+    await waitText(`› ${row}`);
+    key("Escape");
+    await waitText("↑↓ move · Enter select · Esc close");
+    await moveTo(row);
+  }
+  pass("Escape in every detail view returns to the list, keeping the keyboard and the row");
 
   step = "pane minimum";
   await moveTo("Minimum context", "Up");

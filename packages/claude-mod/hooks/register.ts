@@ -841,9 +841,13 @@ export const register: Register = (on, options) => {
     if (!(await isActivated($)) || e.origin.kind !== "person" || view === "menu") return next(e);
     showMenu();
     await $.ui.invalidate("ui.render");
-    // Escape hands the keys to the prompt as it asks to close; ask for them back.
-    await openPane($).catch(() => undefined);
-    await placeRing($);
+    // Restore focus after this close dispatch: Escape's host-side handoff can otherwise
+    // release the keyboard after an in-hook open has already reclaimed it.
+    $.clock.after(0, () => {
+      void openPane($)
+        .then(() => placeRing($))
+        .catch(() => undefined);
+    });
     return { value: undefined };
   });
 
