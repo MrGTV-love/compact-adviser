@@ -49,6 +49,10 @@ current-session identity, so the CLI could only mutate the most recently written
 No implementation reads or mutates another's records.
 No harness installs or loads another harness's runtime.
 
+Pi starts checkpoint judgment in the background: its `agent_settled` handler does
+not hold up the next submitted input. New input invalidates pending credential
+acquisition before a checkpoint can be logged or sent to TypeSafe.
+
 ### omp adapter
 
 omp emits `agent_end`, not Pi's `agent_settled`. The adapter ignores automatic

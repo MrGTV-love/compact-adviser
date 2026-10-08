@@ -358,11 +358,11 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
     });
     omp.on("auto_compaction_start", (_event, ctx) => invalidate(ctx));
   } else {
-    pi.on("agent_settled", (_event, ctx) =>
-      settled(ctx).catch(() =>
+    pi.on("agent_settled", (_event, ctx) => {
+      void settled(ctx).catch(() =>
         notice(ctx, "Compact adviser could not inspect this checkpoint; context left unchanged."),
-      ),
-    );
+      );
+    });
     pi.on("session_before_compact", (event, ctx) => {
       invalidate(ctx);
       compacting = true;

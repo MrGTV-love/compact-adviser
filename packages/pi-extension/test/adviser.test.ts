@@ -664,6 +664,7 @@ test("a saved key command supplies the key at settle time and its output never r
   h.sm.appendMessage(toolResult(`${secret}\n`, "read", "read-key"));
   h.next();
   await h.fire("agent_settled");
+  await h.waitForSettlement();
   assert.equal(h.calls, 1);
   assert.equal(seenKey, secret);
   assert.ok(showedHint(h));
@@ -692,6 +693,7 @@ test("a saved key command that fails leaves the adviser off without a request", 
   assert.ok(!h.notifications.at(-1)?.includes("tsk-never-used"));
   h.next();
   await h.fire("agent_settled");
+  await h.waitForSettlement();
   assert.equal(h.calls, 0);
   assert.equal(h.compactions.length, 0);
   assert.equal(existsSync(requestLogPath(h.dir)), false);
@@ -718,18 +720,27 @@ test("input during command acquisition cancels settlement without blocking the e
     if (name === "acquiring") acquired.resolve();
   });
   t.after(() => watcher.close());
-  const settlement = h.fire("agent_settled");
-  await acquired.promise;
-  watcher.close();
-  await h.fire("input");
-  writeFileSync(`${h.dir}/release`, "");
-  await settlement;
+  // Pi awaits each event handler before accepting the next submitted input.
+  const settlement = h.dispatch("agent_settled");
+  const nonBlocking = settlement.every((result) => !(result instanceof Promise));
+  const submitted = Promise.all(settlement).then(() => h.fire("input"));
+  try {
+    await acquired.promise;
+    watcher.close();
+    if (nonBlocking) await submitted;
+  } finally {
+    writeFileSync(`${h.dir}/release`, "");
+    await submitted;
+    await h.waitForSettlement();
+  }
+  assert.ok(nonBlocking, "Pi must accept input before credential acquisition finishes");
   assert.equal(h.calls, 0);
   assert.equal(h.compactions.length, 0);
   assert.equal(showedHint(h), false);
   assert.equal(existsSync(requestLogPath(h.dir)), false);
   h.next();
   await h.fire("agent_settled");
+  await h.waitForSettlement();
   assert.equal(h.calls, 1);
   assert.equal(h.compactions.length, 1);
 });
