@@ -1,3 +1,4 @@
+import { createHook } from "node:async_hooks";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
@@ -259,9 +260,35 @@ export function harness(
     });
   };
   install();
+  const settlements: Promise<unknown>[] = [];
+  const waitForSettlement = async () => {
+    await Promise.all(settlements.splice(0));
+  };
+  const invoke = (
+    name: string,
+    event: unknown,
+    handler: (event: unknown, ctx: ExtensionContext) => unknown,
+  ) => {
+    // Observe background promises without changing the host's handler-awaiting semantics.
+    const hook = createHook({
+      init(_id, type, _trigger, resource) {
+        if (type === "PROMISE") settlements.push(resource as Promise<unknown>);
+      },
+    });
+    if (name === "agent_settled") hook.enable();
+    try {
+      return handler(event, ctx);
+    } finally {
+      hook.disable();
+    }
+  };
+  const dispatch = (name: string, event: unknown = {}) =>
+    (handlers.get(name) ?? []).map((handler) => invoke(name, event, handler));
   const fire = async (name: string, event: unknown = {}) => {
     const results = [];
-    for (const handler of handlers.get(name) ?? []) results.push(await handler(event, ctx));
+    for (const handler of handlers.get(name) ?? []) {
+      results.push(await invoke(name, event, handler));
+    }
     await flush();
     return results;
   };
@@ -288,6 +315,8 @@ export function harness(
     payloads,
     signals,
     fire,
+    dispatch,
+    waitForSettlement,
     next,
     install,
     settle: async () => {

@@ -47,7 +47,13 @@ import {
   writeSettings,
 } from "../lib/config.ts";
 import { DISABLE_ENV, disabledByEnv } from "../lib/disable.ts";
-import { formatKeyStatus, parseDotenvKey, resolveTypesafeApiKey } from "../lib/env.ts";
+import {
+  formatKeyStatus,
+  parseDotenvKey,
+  resolveTypesafeApiKey,
+  runKeyCommand,
+  savedKeyCommand,
+} from "../lib/env.ts";
 import {
   floorFor,
   JudgeError,
@@ -75,7 +81,7 @@ import {
   verdictPath,
 } from "../lib/paths.ts";
 import { parseProfile } from "../lib/profile.ts";
-import { snapshot } from "../lib/snapshot.ts";
+import { estimateConversationTokens, snapshot } from "../lib/snapshot.ts";
 import { backoff, completeExchange, cooldownReason, SESSION_RETENTION_MS } from "../lib/state.ts";
 import { parsePayload, statusLine } from "../lib/statusline.ts";
 import {
@@ -150,11 +156,16 @@ function dotenvKey(cwd: string): string | undefined {
   }
 }
 
+/** A saved `!command` runs only when `TYPESAFE_API_KEY` is unset. */
 function resolveKey(settings: Settings, cwd: string) {
+  const command = process.env.TYPESAFE_API_KEY?.trim()
+    ? undefined
+    : savedKeyCommand(settings.typesafeApiKey);
   return resolveTypesafeApiKey(
     process.env.TYPESAFE_API_KEY,
     settings.typesafeApiKey,
     dotenvKey(cwd),
+    command === undefined ? undefined : runKeyCommand(command, cwd, process.env),
   );
 }
 
@@ -334,21 +345,22 @@ async function runStop(payload: HookPayload): Promise<void> {
     clearVerdict(verdict);
     return;
   }
-  const key = resolveKey(settings, cwd);
-  const activeKey = key.value?.trim() ?? "";
-  if (!activeKey) return;
-
   const transcript = readTranscript(dir);
   if (transcript.unreadableLines !== 0) return;
   if (!transcript.messages.length) return;
-  const view = snapshot(transcript.messages, [activeKey], transcript.hasImages);
-  if (view.conversationTokens <= MINIMUM_CONVERSATION_TOKENS) return;
+  const conversationTokens = estimateConversationTokens(transcript.messages);
+  if (conversationTokens <= MINIMUM_CONVERSATION_TOKENS) return;
 
   // `contextTokensUsed` is the honest number when signals.json is readable; the local estimate
   // stands in when it is not, so an undocumented field going away weakens the gate, not the product.
-  const tokens = usage.tokens ?? view.conversationTokens;
+  const tokens = usage.tokens ?? conversationTokens;
   if (tokens < settings.minContextTokens) return;
   if (cooldownReason(state, tokens, now) !== undefined) return;
+
+  const key = resolveKey(settings, cwd);
+  const activeKey = key.value?.trim() ?? "";
+  if (!activeKey) return;
+  const view = snapshot(transcript.messages, [activeKey], transcript.hasImages);
 
   const profile = parseProfile(settings.profile);
   const fingerprint = checkpointKey(view.checkpointText);

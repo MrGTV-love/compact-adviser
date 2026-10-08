@@ -9,23 +9,27 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as claudeDisable from "../../claude-mod/lib/disable.ts";
+import * as claudeEnv from "../../claude-mod/lib/env.ts";
 import * as claude from "../../claude-mod/lib/judge.ts";
 import * as claudeLog from "../../claude-mod/lib/log.ts";
 import * as claudeSnapshot from "../../claude-mod/lib/snapshot.ts";
 import * as claudeState from "../../claude-mod/lib/state.ts";
 import * as codexDisable from "../../codex-plugin/src/disable.ts";
+import * as codexEnv from "../../codex-plugin/src/env.ts";
 import * as codex from "../../codex-plugin/src/judge.ts";
 import * as codexLog from "../../codex-plugin/src/log.ts";
 import * as codexRollout from "../../codex-plugin/src/rollout.ts";
 import * as codexSnapshot from "../../codex-plugin/src/snapshot.ts";
 import * as codexState from "../../codex-plugin/src/state.ts";
 import * as grokDisable from "../../grok-plugin/lib/disable.ts";
+import * as grokEnv from "../../grok-plugin/lib/env.ts";
 import * as grok from "../../grok-plugin/lib/judge.ts";
 import * as grokLog from "../../grok-plugin/lib/log.ts";
 import * as grokSnapshot from "../../grok-plugin/lib/snapshot.ts";
 import * as grokState from "../../grok-plugin/lib/state.ts";
 import * as piContext from "../src/context.ts";
 import * as piDisable from "../src/disable.ts";
+import * as piEnv from "../src/env.ts";
 import * as pi from "../src/judge.ts";
 import * as piLog from "../src/log.ts";
 import * as piState from "../src/state.ts";
@@ -485,4 +489,50 @@ test("every package reads the same COMPACT_ADVISER_DISABLE values the same way",
   }
   for (const value of truthy) assert.equal(piDisable.disabledByEnv(value), true, value);
   for (const value of falsy) assert.equal(piDisable.disabledByEnv(value), false, String(value));
+});
+
+test("every package reads a saved key command and its output the same way", () => {
+  const saved = [undefined, "", "  ", "tsk-plain", "!", " ! ", "!cat key", "  !  cat key  ", "x!y"];
+  const outputs = [
+    "",
+    "  \n",
+    "tsk-ok\n",
+    "  tsk-ok  ",
+    "a\nb",
+    "a\u0000b",
+    "a\u007fb",
+    "k".repeat(1025),
+  ];
+  for (const other of [claudeEnv, codexEnv, grokEnv]) {
+    for (const value of saved) {
+      assert.equal(other.savedKeyCommand(value), piEnv.savedKeyCommand(value), String(value));
+    }
+    for (const value of outputs) {
+      assert.equal(other.keyFromCommandOutput(value), piEnv.keyFromCommandOutput(value), value);
+    }
+  }
+  assert.equal(piEnv.keyFromCommandOutput("k".repeat(1024)), "k".repeat(1024));
+  // The hosts that take the command's output from their caller rank it the same way.
+  for (const other of [claudeEnv, codexEnv, grokEnv]) {
+    assert.deepEqual(other.resolveTypesafeApiKey(undefined, "!cat key", ".env-key", "fetched"), {
+      value: "fetched",
+      source: "command",
+    });
+    assert.deepEqual(other.resolveTypesafeApiKey(undefined, "!cat key", ".env-key", undefined), {
+      value: ".env-key",
+      source: ".env",
+    });
+    assert.deepEqual(other.resolveTypesafeApiKey(undefined, "!", undefined, undefined), {
+      value: undefined,
+      source: "missing",
+    });
+    assert.deepEqual(other.resolveTypesafeApiKey(undefined, "tsk-plain", ".env-key", "ignored"), {
+      value: "tsk-plain",
+      source: "saved",
+    });
+    assert.deepEqual(other.resolveTypesafeApiKey("env-key", "!cat key", ".env-key", "fetched"), {
+      value: "env-key",
+      source: "env",
+    });
+  }
 });

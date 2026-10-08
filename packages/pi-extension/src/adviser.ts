@@ -83,7 +83,7 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
   // and re-reading it per event would only invite a mid-session half-disabled state.
   if (disabledByEnv(process.env[DISABLE_ENV])) return;
   const store = new ConfigStore(options.agentDir);
-  const resolvedKey = (cwd = process.cwd()): ResolvedTypesafeApiKey => {
+  const resolvedKey = async (cwd = process.cwd()): Promise<ResolvedTypesafeApiKey> => {
     if (options.key) {
       const value = options.key();
       return value !== undefined && value.trim() !== ""
@@ -92,7 +92,6 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
     }
     return resolveTypesafeApiKey(process.env, cwd, savedApiKey(store));
   };
-  const key = (cwd?: string) => resolvedKey(cwd).value;
   const now = options.now ?? Date.now;
   const evaluate =
     options.evaluate ??
@@ -158,7 +157,6 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
       ctx.hasPendingMessages() ||
       ctx.ui.getEditorText?.().trim() ||
       c.mode === "off" ||
-      !key(ctx.cwd)?.trim() ||
       !usage ||
       usage.tokens === null ||
       !Number.isFinite(usage.tokens) ||
@@ -216,17 +214,6 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
     if (request || eligible(ctx, config, state) === undefined) return;
     const profile = parseProfile(config.profile);
     if (options.sources && !ompSources) throw new Error("omp source helpers unavailable");
-    const view = snapshot(ctx, [key(ctx.cwd), savedApiKey(store)], options.host, ompSources);
-    if (view.conversationTokens <= 20000 || view.checkpointKey === state.lastHintKey) return;
-    let loggedBody: string | undefined;
-    if (config.logRequests) {
-      try {
-        loggedBody = requestBody(view.state, profile);
-        appendRequestLog(options.agentDir, loggedBody);
-      } catch {
-        // Request logging must not replace or delay the judgment.
-      }
-    }
     const controller = new AbortController();
     request = controller;
     const epoch = generation,
@@ -234,13 +221,27 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
       configIdentity = JSON.stringify(config);
     const current = () =>
       !controller.signal.aborted && generation === epoch && sessionIdentity(ctx) === identity;
+    let loggedBody: string | undefined;
     try {
-      const result = await evaluate(
-        view.state,
-        key(ctx.cwd)?.trim() ?? "",
-        controller.signal,
-        profile,
-      );
+      const apiKey = (await resolvedKey(ctx.cwd)).value?.trim() ?? "";
+      if (
+        !apiKey ||
+        !current() ||
+        JSON.stringify(store.read()) !== configIdentity ||
+        eligible(ctx, config, state) === undefined
+      )
+        return;
+      const view = snapshot(ctx, [apiKey, savedApiKey(store)], options.host, ompSources);
+      if (view.conversationTokens <= 20000 || view.checkpointKey === state.lastHintKey) return;
+      if (config.logRequests) {
+        try {
+          loggedBody = requestBody(view.state, profile);
+          appendRequestLog(options.agentDir, loggedBody);
+        } catch {
+          // Request logging must not replace or delay the judgment.
+        }
+      }
+      const result = await evaluate(view.state, apiKey, controller.signal, profile);
       if (!current()) return;
       if (config.logRequests) {
         try {
@@ -475,13 +476,14 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
         "warning",
       );
   }
-  function status(ctx: ExtensionCommandContext) {
+  async function status(ctx: ExtensionCommandContext) {
     const c = store.read(),
       s = restoreState(ctx.sessionManager.getBranch()),
       t = ctx.getContextUsage()?.tokens,
       u = usageFraction(ctx);
+    const source = (await resolvedKey(ctx.cwd)).source;
     ctx.ui.notify(
-      `Mode: ${c.mode}. Minimum: ${c.minContextTokens.toLocaleString("en-US")} tokens. Context: ${t ?? "unknown"}${Number.isFinite(u) ? ` (${Math.round(u * 100)}% of the window; hint floor ${floorFor(u, parseProfile(c.profile)).toFixed(2)})` : ""}. ${formatKeyStatus(resolvedKey(ctx.cwd).source)}. ${typeof t === "number" ? (cooldownReason(s, t, now()) ?? "No cooldown; semantic checks still apply.") : "Waiting for fresh model usage."} Request log: ${c.logRequests ? requestLogPath(options.agentDir) : "off"}. Settings: ${store.path}`,
+      `Mode: ${c.mode}. Minimum: ${c.minContextTokens.toLocaleString("en-US")} tokens. Context: ${t ?? "unknown"}${Number.isFinite(u) ? ` (${Math.round(u * 100)}% of the window; hint floor ${floorFor(u, parseProfile(c.profile)).toFixed(2)})` : ""}. ${formatKeyStatus(source)}. ${typeof t === "number" ? (cooldownReason(s, t, now()) ?? "No cooldown; semantic checks still apply.") : "Waiting for fresh model usage."} Request log: ${c.logRequests ? requestLogPath(options.agentDir) : "off"}. Settings: ${store.path}`,
       "info",
     );
   }
@@ -571,7 +573,7 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
           }
         }
       } else if (selected === labels[4]) minimum(ctx, "default");
-      else status(ctx);
+      else await status(ctx);
     }
   }
   pi.registerCommand("compact-adviser", {
@@ -589,7 +591,7 @@ export function installAdviser(pi: ExtensionAPI, options: Options): void {
         else if (["auto", "hint", "off"].includes(command) && !value)
           await changeMode(ctx, command as Mode);
         else if (command === "threshold" && value) minimum(ctx, value);
-        else if (command === "status" && !value) status(ctx);
+        else if (command === "status" && !value) await status(ctx);
         else if (["snooze", "dismiss"].includes(command) && !value) {
           const s = restoreState(ctx.sessionManager.getBranch());
           invalidate(ctx);

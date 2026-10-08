@@ -368,6 +368,75 @@ describe("turn-end gates", () => {
     expect(w.journal.requests[0]?.body.includes("from-saved")).toBe(false);
   });
 
+  test("a saved key command supplies the key when env is empty and wins over cwd .env", async ($, on) => {
+    const w = world(on, {
+      key: undefined,
+      savedKey: "!cat ~/.keys/typesafe",
+      command: "tsk-from-command\n",
+      dotenv: "TYPESAFE_API_KEY=from-dotenv\n",
+      logRequests: true,
+    });
+    await $.session.start(interactiveStart);
+    await turnEnd($, w);
+    expect(w.journal.processRuns).toEqual([["/bin/sh", "-c", "cat ~/.keys/typesafe"]]);
+    expect(w.journal.requests).toHaveLength(1);
+    expect(w.journal.requests[0]?.headers.Authorization).toBe("Bearer tsk-from-command");
+    expect(w.journal.requests[0]?.body.includes("tsk-from-command")).toBe(false);
+    const everything = JSON.stringify([w.journal.fsWrites, w.journal.logs, w.journal.toasts]);
+    expect(everything.includes("tsk-from-command")).toBe(false);
+    await $.command.run(commandRun("status"));
+    const line = w.journal.logs.at(-1) ?? "";
+    expect(line).toContain("Key: command.");
+    expect(line.includes("tsk-from-command")).toBe(false);
+  });
+
+  for (const [name, command] of [
+    ["exits non-zero", { exitCode: 2, stdout: "tsk-partial\n" }],
+    ["prints nothing", "   \n"],
+    ["prints two lines", "tsk-partial\ntsk-second"],
+    ["cannot start or times out", "throw" as const],
+  ] as const) {
+    test(`a saved key command that ${name} is no key, no request, and no leak`, async ($, on) => {
+      const w = world(on, { key: undefined, savedKey: "!fetch-the-key", command });
+      await $.session.start(interactiveStart);
+      await turnEnd($, w);
+      expect(w.journal.processRuns.length).toBeGreaterThan(0);
+      expect(w.journal.requests).toHaveLength(0);
+      await $.command.run(commandRun("status"));
+      expect(w.journal.logs.at(-1) ?? "").toContain("Key: missing.");
+      expect(JSON.stringify(w.journal).includes("tsk-partial")).toBe(false);
+    });
+  }
+
+  test("a failed saved key command falls through to cwd .env", async ($, on) => {
+    const w = world(on, {
+      key: undefined,
+      savedKey: "!fetch-the-key",
+      command: { exitCode: 1, stdout: "" },
+      dotenv: "TYPESAFE_API_KEY=from-dotenv\n",
+    });
+    await $.session.start(interactiveStart);
+    await turnEnd($, w);
+    expect(w.journal.requests[0]?.headers.Authorization).toBe("Bearer from-dotenv");
+  });
+
+  test("a host env key wins over a saved key command and the command never runs", async ($, on) => {
+    const w = world(on, { savedKey: "!fetch-the-key", command: "tsk-from-command" });
+    await $.session.start(interactiveStart);
+    await turnEnd($, w);
+    expect(w.journal.processRuns).toEqual([]);
+    expect(w.journal.requests[0]?.headers.Authorization).toBe(`Bearer ${KEY}`);
+  });
+
+  test("a saved key command stays idle until every cheaper gate passes", async ($, on) => {
+    const w = world(on, { key: undefined, savedKey: "!fetch-the-key", command: "tsk-x" });
+    w.usage.tokens = 1000;
+    await $.session.start(interactiveStart);
+    await turnEnd($, w);
+    expect(w.journal.processRuns).toEqual([]);
+    expect(w.journal.requests).toHaveLength(0);
+  });
+
   test("a host env key wins over a saved menu key", async ($, on) => {
     const w = world(on, { savedKey: "from-saved" });
     await $.session.start(interactiveStart);
@@ -437,6 +506,62 @@ describe("turn-end gates", () => {
     await drain(w);
     expect(w.journal.requests).toHaveLength(0);
     expect(hinted(w)).toBe(false);
+  });
+
+  test("a new turn during command acquisition invalidates the checkpoint", async ($, on) => {
+    let markStarted: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const w = world(on, {
+      key: undefined,
+      savedKey: "!fetch-the-key",
+      logRequests: true,
+      mode: "auto",
+      consent: { autoAcknowledged: true },
+      command: async () => {
+        markStarted();
+        await released;
+        return "tsk-from-command\n";
+      },
+    });
+    await $.session.start(interactiveStart);
+    await $.turn.complete(answered());
+    await w.clock.settle();
+    await started;
+    await $.turn.start({ turnId: "t2", origin: { kind: "composer" } } as never);
+    release();
+    await drain(w);
+    expect(w.journal.requests).toHaveLength(0);
+    expect(w.journal.fsWrites).toHaveLength(0);
+    expect(w.journal.compactions).toHaveLength(0);
+    expect(hinted(w)).toBe(false);
+    await turnEnd($, w);
+    expect(w.journal.requests).toHaveLength(1);
+    expect(w.journal.compactions).toHaveLength(1);
+  });
+
+  test("one request-local key survives a later command failure", async ($, on) => {
+    let acquisitions = 0;
+    const w = world(on, {
+      key: undefined,
+      savedKey: "!fetch-the-key",
+      logRequests: true,
+      command: async () => (++acquisitions === 1 ? "tsk-once" : { exitCode: 1, stdout: "" }),
+    });
+    await $.session.start(interactiveStart);
+    await turnEnd($, w);
+    expect(w.journal.requests).toHaveLength(1);
+    expect(w.journal.requests[0]?.headers.Authorization).toBe("Bearer tsk-once");
+    expect(hinted(w)).toBe(true);
+    expect(acquisitions).toBe(1);
+    expect(JSON.stringify(w.journal.fsWrites).includes("tsk-once")).toBe(false);
+    await $.command.run(commandRun("status"));
+    expect(w.journal.logs.at(-1) ?? "").toContain("Key: missing.");
   });
 
   test("a turn that starts while TypeSafe answers discards the verdict", async ($, on) => {
@@ -928,6 +1053,28 @@ describe("commands", () => {
 });
 
 describe("settings pane", () => {
+  for (const dotenv of [undefined, "TYPESAFE_API_KEY=from-dotenv\n"]) {
+    test(`a configured command is unverified in settings with ${dotenv ? "a fallback" : "no fallback"}`, async ($, on) => {
+      const w = world(on, {
+        key: undefined,
+        savedKey: "!exit 1",
+        command: { exitCode: 1, stdout: "" },
+        dotenv,
+      });
+      await $.session.start(interactiveStart);
+      await $.command.run(commandRun(""));
+      expect(text(await $.ui.render(pane))).toContain("configured (unverified)");
+      await $.ui.press({ plugin: PLUGIN, key: "menu:typesafeApiKey" });
+      const detail = text(await $.ui.render(pane));
+      expect(detail).toContain("has not been verified");
+      expect(detail).not.toContain("In effect:");
+      expect(w.journal.processRuns).toHaveLength(0);
+      await $.command.run(commandRun("status"));
+      expect(w.journal.logs.at(-1) ?? "").toContain(dotenv ? "Key: .env." : "Key: missing.");
+      expect(w.journal.processRuns).toHaveLength(1);
+    });
+  }
+
   test("opens focused and lists the Pi menu rows, arrow-keyed, with the values in effect", async ($, on) => {
     const w = world(on);
     await $.session.start(interactiveStart);

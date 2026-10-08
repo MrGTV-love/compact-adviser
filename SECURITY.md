@@ -2,11 +2,12 @@
 
 ## Conversation data
 
-The Pi extension, Claude Code mod, Codex plugin, and Grok Build plugin send selected conversation text to TypeSafe when the package is installed, a key is available from the launch environment, saved settings, or `TYPESAFE_API_KEY` in a `.env` file in the working directory, and the other product gates pass (mode, minimum context, idle session).
+The Pi extension, Claude Code mod, Codex plugin, and Grok Build plugin send selected conversation text to TypeSafe when the package is installed, a key is available, and the other product gates pass (mode, minimum context, idle session).
 Installing the package is that consent; there is no separate sharing toggle.
 With `TYPESAFE_BASE` set in the launch environment, the same request and key go to `<TYPESAFE_BASE>/v1/systemone` instead. The plugin never reads it from saved settings or a working-directory `.env`; a host's own trusted project configuration can still set environment variables, as it can already run hooks. The base must be `https`, or plain `http` only on a loopback host (`127.0.0.1`, `[::1]`, `localhost`), so the key never crosses the network in cleartext; any other value, or one with credentials, a query or a fragment, means no request and no advice.
 For host-specific key setup, see [Quick Start](README.md#quick-start). A saved key lives with mode and threshold in the implementation's settings store, with file permissions as restrictive as the host allows.
 It is never shown after save, and never written to logs, status lines, error messages, or TypeSafe request bodies, including when the agent reads the settings file.
+For saved key commands, execution and fallback rules are documented in [Fetch the key with a command](README.md#fetch-the-key-with-a-command). Only the person's saved setting can supply a command; the launch environment and a working-directory `.env` are literal key sources and never executed by key resolution. Treat saved commands as trusted code: they run with the session's environment and permissions, so do not save one supplied by an untrusted repository. The fetched key is held in memory for one judgment or status lookup, never persisted or cached; command stdout and stderr are never logged or displayed by the adviser. These output protections do not sandbox the command or prevent its own filesystem or network side effects.
 
 | Sent to `https://api.typesafe.ai/v1/systemone` | Not sent |
 | --- | --- |

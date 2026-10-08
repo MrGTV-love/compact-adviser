@@ -42,8 +42,8 @@ Usage: compact-adviser <command> [value]
   key <set|clear|status>    Save, clear, or report the TypeSafe API key (never printed)
 
 Automatic compaction is not available on Codex: nothing outside a session can run /compact.
-A key may also come from TYPESAFE_API_KEY in the environment or a .env file in the session's
-working directory; that takes precedence over the saved one.`;
+A non-empty TYPESAFE_API_KEY in the launch environment wins over the saved setting (a literal
+key or a command), which wins over the session cwd's ./.env.`;
 
 export interface CliEnvironment {
   env: NodeJS.ProcessEnv;

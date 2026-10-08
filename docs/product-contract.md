@@ -21,7 +21,8 @@ There is no percentage-of-context-window condition.
 - `COMPACT_ADVISER_DISABLE` is a per-session kill switch. Set to `1`, `true`, `yes` or `on` (case-insensitive, surrounding whitespace ignored), it makes the product take no action for that process: no TypeSafe/Jev request, no hint, no automatic compaction, no command, and no status-line output that depends on a judgment. It wins over a saved `hint` or `auto` mode and over every other enablement path. Any other value, including unset, leaves behavior unchanged. The Pi extension and Claude Code read it once when the session loads. Codex and Grok check it in each short-lived hook, status-line, or command process, all of which inherit the session's fixed environment. Every implementation parses it through a byte-identical `disable.ts`. The Pi extension returns from install before registering hooks or `/compact-adviser`. Codex returns from the hook and CLI process before judging or running a command. Grok returns from hooks, status output, and commands before doing work.
 - Non-interactive sessions stay inert when that can be detected reliably. The Pi extension requires `mode === "tui"` with a UI on both Pi and omp; the Claude Code mod requires the host's `session.start` `isInteractive` flag and returns before command registration, session-record pruning, pending-save toasts, and compaction cooldown writes. Codex reads the rollout's `originator`. No host guesses from `CI` or similar ambient variables.
 - Uncertain, stale, interrupted, or failed judgments leave context alone. A host whose only user-facing channel is permanent (Codex's hook output becomes a scrollback line that cannot be cleared) reports such a failure nowhere and simply backs off.
-- Installing or loading the package is consent to send eligible checkpoint context to TypeSafe when a key is available and other product gates pass (mode, minimum context, idle session, and so on). Host-specific key setup is documented in [Quick Start](../README.md#quick-start); key handling and security boundaries are documented in [SECURITY.md](../SECURITY.md#conversation-data). After save the UI reports only presence or key source (`env` / `saved` / `.env` / `missing`), never the value. A non-empty launch-environment value wins over the saved key, which wins over a session-cwd `.env`.
+Claude Code preserves the settlement generation across asynchronous preparation and rechecks it after key acquisition, before log writes and request dispatch, and before applying a result; a new turn, settings change, snooze/dismiss, or completed manual compaction invalidates that checkpoint.
+- Installing or loading the package is consent to send eligible checkpoint context to TypeSafe when a key is available and other product gates pass (mode, minimum context, idle session, and so on). Key setup, source precedence, command execution and fallback rules, and settings/status presentation are documented in [Quick Start](../README.md#quick-start); key handling and security boundaries are documented in [SECURITY.md](../SECURITY.md#conversation-data).
 - There is no separate sharing toggle. A saved `sharingConsent` value from an older version is ignored.
 - Native compaction remains authoritative and lossy; no timing model promises perfect preservation.
 - Configuration changes do not immediately compact.
@@ -47,6 +48,10 @@ Snooze and dismiss are a known gap: Codex gives neither the hook nor the CLI a r
 current-session identity, so the CLI could only mutate the most recently written session record.
 No implementation reads or mutates another's records.
 No harness installs or loads another harness's runtime.
+
+Pi starts checkpoint judgment in the background: its `agent_settled` handler does
+not hold up the next submitted input. New input invalidates pending credential
+acquisition before a checkpoint can be logged or sent to TypeSafe.
 
 ### omp adapter
 

@@ -16,7 +16,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ConfigStore } from "./config.ts";
 import { DISABLE_ENV, disabledByEnv } from "./disable.ts";
-import { parseDotenvKey, type ResolvedTypesafeApiKey, resolveTypesafeApiKey } from "./env.ts";
+import {
+  parseDotenvKey,
+  type ResolvedTypesafeApiKey,
+  resolveTypesafeApiKey,
+  runKeyCommand,
+  savedKeyCommand,
+} from "./env.ts";
 import { JudgeError, judge, qualifies, requestBody, typesafeEndpoint } from "./judge.ts";
 import {
   appendRequestLogLine,
@@ -74,7 +80,10 @@ function judgeEndpoint(env: NodeJS.ProcessEnv): string {
   return endpoint;
 }
 
-/** Launch environment, then the key saved in settings, then `TYPESAFE_API_KEY` in `cwd/.env`. */
+/**
+ * Launch environment, then the key saved in settings (a saved `!command` runs only when the
+ * environment has no key), then `TYPESAFE_API_KEY` in `cwd/.env`.
+ */
 export function resolveKey(
   env: NodeJS.ProcessEnv,
   saved: string | undefined,
@@ -86,7 +95,9 @@ export function resolveKey(
   } catch {
     dotenv = undefined;
   }
-  return resolveTypesafeApiKey(env.TYPESAFE_API_KEY, saved, dotenv);
+  const command = env.TYPESAFE_API_KEY?.trim() ? undefined : savedKeyCommand(saved);
+  const fetched = command === undefined ? undefined : runKeyCommand(command, cwd, env);
+  return resolveTypesafeApiKey(env.TYPESAFE_API_KEY, saved, dotenv, fetched);
 }
 
 async function checkpointKey(text: string): Promise<string> {
@@ -168,13 +179,14 @@ async function onStop(payload: HookPayload, environment: Environment): Promise<H
   if (!isInteractive(rollout)) return {};
   if (!payload.last_assistant_message?.trim()) return {};
 
-  const key = resolveKey(environment.env, config.typesafeApiKey, payload.cwd ?? process.cwd());
-  if (!key.value) return {};
-
   const tokens = rollout.tokens;
   if (typeof tokens !== "number" || !Number.isFinite(tokens)) return {};
   if (tokens < config.minContextTokens) return {};
   if (cooldownReason(state, tokens, now) !== undefined) return {};
+
+  // Last of the cheap gates: a saved key command runs here.
+  const key = resolveKey(environment.env, config.typesafeApiKey, payload.cwd ?? process.cwd());
+  if (!key.value) return {};
 
   const view = snapshot(rollout.messages, [key.value, config.typesafeApiKey], {
     truncated: rollout.truncated,

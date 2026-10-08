@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, watch, writeFileSync } from "node:fs";
 import test, { type TestContext } from "node:test";
 import {
   ENDPOINT,
@@ -308,42 +308,32 @@ test("late answers are discarded on all native invalidation events", async (t) =
     "session_shutdown",
     "session_before_compact",
   ]) {
-    let answer: ((j: ReturnType<typeof success>) => void) | undefined;
-    const h = harness(
-      t,
-      () =>
-        new Promise((resolve) => {
-          answer = resolve;
-        }),
-    );
+    const answer = Promise.withResolvers<Judgment>();
+    const h = harness(t, () => answer.promise);
     h.enable("auto");
-    await h.fire("agent_settled");
+    const settlement = h.fire("agent_settled");
+    await flush();
     assert.equal(h.calls, 1);
     await h.fire(event);
     assert.equal(h.signals[0].aborted, true, event);
-    answer?.(success());
-    await flush();
+    answer.resolve(success());
+    await settlement;
     assert.equal(h.compactions.length, 0, event);
   }
 });
 
 test("a cross-session disable or new pending message wins over a favorable in-flight answer", async (t) => {
   for (const kind of ["config", "pending", "leaf"]) {
-    let answer: ((j: ReturnType<typeof success>) => void) | undefined;
-    const h = harness(
-      t,
-      () =>
-        new Promise((resolve) => {
-          answer = resolve;
-        }),
-    );
+    const answer = Promise.withResolvers<Judgment>();
+    const h = harness(t, () => answer.promise);
     h.enable("auto");
-    await h.fire("agent_settled");
+    const settlement = h.fire("agent_settled");
+    await flush();
     if (kind === "config") h.store.update({ mode: "off" });
     else if (kind === "pending") h.pending = true;
     else h.next("Newer context");
-    answer?.(success());
-    await flush();
+    answer.resolve(success());
+    await settlement;
     assert.equal(h.compactions.length, 0, kind);
   }
 });
@@ -641,6 +631,121 @@ test("a saved key in a compact-adviser.json read is absent from the request body
   assert.ok(!logged.includes(secret));
   assert.ok(body.includes("hint"));
   assert.ok(logged.includes("jev-latest"));
+});
+
+test("a saved key command supplies the key at settle time and its output never reaches a log", async (t) => {
+  const previous = process.env.TYPESAFE_API_KEY;
+  t.after(() => {
+    if (previous === undefined) delete process.env.TYPESAFE_API_KEY;
+    else process.env.TYPESAFE_API_KEY = previous;
+  });
+  delete process.env.TYPESAFE_API_KEY;
+  const secret = "tsk-command-key-must-not-leave";
+  let seenKey = "";
+  const h = harness(t, async (_state, key) => {
+    seenKey = key;
+    return success();
+  });
+  writeFileSync(`${h.dir}/key-source`, `${secret}\n`);
+  h.install("0.82.0", false);
+  h.store.update({
+    typesafeApiKey: "!if [ -f fetched ]; then exit 1; fi; touch fetched; cat key-source",
+    logRequests: true,
+  });
+  h.enable();
+  // The command output lands in the transcript as a tool result, so redaction must catch it.
+  h.sm.appendMessage({
+    ...assistant(""),
+    content: [
+      { type: "toolCall", id: "read-key", name: "read", arguments: { path: "key-source" } },
+    ],
+    stopReason: "toolUse",
+  });
+  h.sm.appendMessage(toolResult(`${secret}\n`, "read", "read-key"));
+  h.next();
+  await h.fire("agent_settled");
+  await h.waitForSettlement();
+  assert.equal(h.calls, 1);
+  assert.equal(seenKey, secret);
+  assert.ok(showedHint(h));
+  assert.ok(!requestBody(h.payloads[0]).includes(secret));
+  assert.ok(!readFileSync(requestLogPath(h.dir), "utf8").includes(secret));
+  assert.ok(!readFileSync(h.store.path, "utf8").includes(secret));
+  await h.command("status");
+  assert.ok(h.notifications.at(-1)?.includes("Key: missing"));
+  assert.ok(h.notifications.every((n) => !n.includes(secret)));
+  assert.ok(h.statuses.every((s) => !s?.includes(secret)));
+});
+
+test("a saved key command that fails leaves the adviser off without a request", async (t) => {
+  const previous = process.env.TYPESAFE_API_KEY;
+  t.after(() => {
+    if (previous === undefined) delete process.env.TYPESAFE_API_KEY;
+    else process.env.TYPESAFE_API_KEY = previous;
+  });
+  delete process.env.TYPESAFE_API_KEY;
+  const h = harness(t);
+  h.install("0.82.0", false);
+  h.store.update({ typesafeApiKey: "!echo tsk-never-used >&2; exit 4", logRequests: true });
+  h.enable();
+  await h.command("status");
+  assert.ok(h.notifications.at(-1)?.includes("Key: missing"));
+  assert.ok(!h.notifications.at(-1)?.includes("tsk-never-used"));
+  h.next();
+  await h.fire("agent_settled");
+  await h.waitForSettlement();
+  assert.equal(h.calls, 0);
+  assert.equal(h.compactions.length, 0);
+  assert.equal(existsSync(requestLogPath(h.dir)), false);
+  assert.equal(showedHint(h), false);
+  assert.ok(h.notifications.every((n) => !n.includes("tsk-never-used")));
+});
+
+test("input during command acquisition cancels settlement without blocking the event loop", {
+  timeout: 5000,
+}, async (t) => {
+  const previous = process.env.TYPESAFE_API_KEY;
+  t.after(() => {
+    if (previous === undefined) delete process.env.TYPESAFE_API_KEY;
+    else process.env.TYPESAFE_API_KEY = previous;
+  });
+  delete process.env.TYPESAFE_API_KEY;
+  const h = harness(t);
+  h.install("0.82.0", false);
+  h.store.update({
+    typesafeApiKey:
+      "!touch acquiring; while [ ! -f release ]; do sleep 0.01; done; echo tsk-command",
+    logRequests: true,
+  });
+  h.enable("auto");
+  const acquired = Promise.withResolvers<void>();
+  const watcher = watch(h.dir, (_event, name) => {
+    if (name === "acquiring") acquired.resolve();
+  });
+  t.after(() => watcher.close());
+  // Pi awaits each event handler before accepting the next submitted input.
+  const settlement = h.dispatch("agent_settled");
+  const nonBlocking = settlement.every((result) => !(result instanceof Promise));
+  const submitted = Promise.all(settlement).then(() => h.fire("input"));
+  try {
+    await acquired.promise;
+    watcher.close();
+    if (nonBlocking) await submitted;
+  } finally {
+    writeFileSync(`${h.dir}/release`, "");
+    await submitted;
+    await h.waitForSettlement();
+  }
+  assert.ok(nonBlocking, "Pi must accept input before credential acquisition finishes");
+  assert.equal(h.calls, 0);
+  assert.equal(h.compactions.length, 0);
+  assert.equal(showedHint(h), false);
+  assert.equal(existsSync(requestLogPath(h.dir)), false);
+  h.next();
+  await h.fire("agent_settled");
+  await h.waitForSettlement();
+  assert.equal(h.calls, 1);
+  assert.equal(h.compactions.length, 1);
 });
 
 /** Sets `COMPACT_ADVISER_DISABLE` for one test and restores the launch environment after. */

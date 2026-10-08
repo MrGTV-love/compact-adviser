@@ -37,8 +37,10 @@ import {
 import { disabledByEnv } from "../lib/disable.ts";
 import {
   formatKeyStatus,
+  keyFromCommandOutput,
   parseDotenvKey,
   resolveTypesafeApiKey,
+  savedKeyCommand,
   type TypesafeKeySource,
 } from "../lib/env.ts";
 import {
@@ -125,24 +127,42 @@ function isActivated($: EngineInterface): Promise<boolean> {
   return activation;
 }
 
-async function resolvedKey($: EngineInterface) {
+const KEY_COMMAND_TIMEOUT_MS = 10_000;
+
+/** Runs a saved key command; any failure (exit, timeout, unusable output) is no key. */
+async function runKeyCommand($: EngineInterface, command: string): Promise<string | undefined> {
+  if (command === "") return undefined;
+  try {
+    const result = await $.process.run(["/bin/sh", "-c", command], {
+      timeoutMs: KEY_COMMAND_TIMEOUT_MS,
+    });
+    return result.exitCode === 0 ? keyFromCommandOutput(result.stdout) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Settings redraws pass `run = false` to avoid executing credential commands; a configured
+ * command is then unverified, not an effective key source.
+ */
+async function resolvedKey($: EngineInterface, run = true) {
   const fromEnv = await $.env.get("TYPESAFE_API_KEY");
   if (fromEnv !== undefined && fromEnv.trim() !== "") {
     return resolveTypesafeApiKey(fromEnv);
   }
   const saved = readSavedApiKey(await $.config.list(), loadedOptions);
-  if (saved) return resolveTypesafeApiKey(undefined, saved);
+  const command = savedKeyCommand(saved);
+  if (saved && command === undefined) return resolveTypesafeApiKey(undefined, saved);
+  if (command !== undefined && !run) return { value: undefined, source: "command" as const };
+  const fetched = command === undefined ? undefined : await runKeyCommand($, command);
   let dotenv: string | undefined;
   try {
     dotenv = parseDotenvKey(await $.fs.read(".env"), "TYPESAFE_API_KEY");
   } catch {
     dotenv = undefined;
   }
-  return resolveTypesafeApiKey(undefined, undefined, dotenv);
-}
-
-async function apiKey($: EngineInterface): Promise<string> {
-  return (await resolvedKey($)).value?.trim() ?? "";
+  return resolveTypesafeApiKey(undefined, saved, dotenv, fetched);
 }
 
 /** A loopback-only endpoint override for the live regression's local TypeSafe fixture. */
@@ -193,7 +213,7 @@ async function sessionLogPath($: EngineInterface): Promise<string> {
   return requestLogPath(await logHome($), await $.session.id());
 }
 
-async function appendTypeSafeLog($: EngineInterface, line: string): Promise<void> {
+async function appendTypeSafeLog($: EngineInterface, line: string, epoch: number): Promise<void> {
   const path = await sessionLogPath($);
   let existing = "";
   try {
@@ -201,6 +221,7 @@ async function appendTypeSafeLog($: EngineInterface, line: string): Promise<void
   } catch {
     existing = "";
   }
+  if (epoch !== generation) return;
   await $.fs.write(path, `${existing}${line}`);
 }
 
@@ -246,18 +267,16 @@ function usageFraction(context: {
   return context.tokens / denominator;
 }
 
-async function eligible(
-  $: EngineInterface,
+function eligible(
   config: Config,
   state: SessionState,
   tokens: number | undefined,
   now: number,
-): Promise<boolean> {
+): boolean {
   return (
     interactive &&
     !compacting &&
     config.mode !== "off" &&
-    (await apiKey($)) !== "" &&
     typeof tokens === "number" &&
     Number.isFinite(tokens) &&
     tokens >= config.minContextTokens &&
@@ -271,31 +290,37 @@ async function judgeCheckpoint($: EngineInterface, epoch: number): Promise<void>
   judging = true;
   try {
     const initial = await loadConfig($);
+    if (epoch !== generation) return;
     const profile = parseProfile(initial.profile);
-    const [messages, activeKey, rows] = await Promise.all([
+    const [messages, credential, rows] = await Promise.all([
       $.session.messages(),
-      apiKey($),
+      resolvedKey($),
       $.config.list(),
     ]);
+    const activeKey = credential.value?.trim() ?? "";
+    if (epoch !== generation || !activeKey) return;
     const view = snapshot(messages, [activeKey, readSavedApiKey(rows, loadedOptions)]);
     if (view.conversationTokens <= 20000) return;
     const fingerprint = await checkpointKey(view.checkpointText);
     if ((await loadState($)).state.lastHintKey === fingerprint) return;
+    if (epoch !== generation) return;
     let loggedBody: string | undefined;
-    if (initial.logRequests) {
-      try {
-        loggedBody = requestBody(view.state, profile);
-        await appendTypeSafeLog($, requestLogLine(loggedBody));
-      } catch {
-        // Request logging must not replace or delay the judgment.
-      }
-    }
     let result: Awaited<ReturnType<typeof judge>>;
     try {
       const endpoint = await judgeEndpoint($);
+      if (epoch !== generation) return;
+      if (initial.logRequests) {
+        try {
+          loggedBody = requestBody(view.state, profile);
+          await appendTypeSafeLog($, requestLogLine(loggedBody), epoch);
+        } catch {
+          // Request logging must not replace or delay the judgment.
+        }
+      }
+      if (epoch !== generation) return;
       result = await judge(
         view.state,
-        await apiKey($),
+        activeKey,
         {
           fetch: (url, init) => $.http.fetch(url, init),
           sleep: (ms) => $.clock.sleep(ms),
@@ -307,13 +332,15 @@ async function judgeCheckpoint($: EngineInterface, epoch: number): Promise<void>
       if (epoch !== generation) return;
       if (initial.logRequests) {
         try {
-          await appendTypeSafeLog($, errorLogLine(loggedJudgeErrorKind(error), loggedBody));
+          await appendTypeSafeLog($, errorLogLine(loggedJudgeErrorKind(error), loggedBody), epoch);
         } catch {
           // Error logging must not replace backoff.
         }
       }
       const { key, state } = await loadState($);
-      await $.store.set(key, backoff(state, await $.clock.now()));
+      const now = await $.clock.now();
+      if (epoch !== generation) return;
+      await $.store.set(key, backoff(state, now));
       notice($, judgeFailureMessage(error));
       return;
     }
@@ -322,6 +349,7 @@ async function judgeCheckpoint($: EngineInterface, epoch: number): Promise<void>
     const { key, state: current } = await loadState($);
     const now = await $.clock.now();
     const { context } = await $.session.usage({ breakdown: "summary" });
+    if (epoch !== generation) return;
     if (initial.logRequests) {
       try {
         await appendTypeSafeLog(
@@ -333,6 +361,7 @@ async function judgeCheckpoint($: EngineInterface, epoch: number): Promise<void>
             undefined,
             profile,
           ),
+          epoch,
         );
       } catch {
         // Response logging must not replace the gate decision.
@@ -340,7 +369,8 @@ async function judgeCheckpoint($: EngineInterface, epoch: number): Promise<void>
     }
     if (
       JSON.stringify(latest) !== JSON.stringify(initial) ||
-      !(await eligible($, latest, current, context.tokens, now))
+      epoch !== generation ||
+      !eligible(latest, current, context.tokens, now)
     )
       return;
     let state: SessionState = { ...current, failures: 0, retryAfter: 0, updatedAt: now };
@@ -406,24 +436,27 @@ async function judgeCheckpoint($: EngineInterface, epoch: number): Promise<void>
 
 /** The synchronous half of a turn end: count the exchange and run the cheap gates. */
 async function settle($: EngineInterface): Promise<void> {
+  const epoch = generation;
   const { context } = await $.session.usage();
   const now = await $.clock.now();
   const { key, state: stored } = await loadState($);
   const state = completeExchange(stored, context.tokens, now);
+  if (epoch !== generation) return;
   await $.store.set(key, state);
   let config: Config;
   try {
     config = await loadConfig($);
   } catch (error) {
-    notice($, error instanceof Error ? error.message : "Cannot read compact-adviser settings.");
+    if (epoch === generation)
+      notice($, error instanceof Error ? error.message : "Cannot read compact-adviser settings.");
     return;
   }
-  if (judging || !(await eligible($, config, state, context.tokens, now))) return;
-  const epoch = generation;
+  if (epoch !== generation || judging || !eligible(config, state, context.tokens, now)) return;
   $.clock.after(0, () => {
-    void judgeCheckpoint($, epoch).catch(() =>
-      notice($, "Compact adviser could not inspect this checkpoint; context left unchanged."),
-    );
+    void judgeCheckpoint($, epoch).catch(() => {
+      if (epoch === generation)
+        notice($, "Compact adviser could not inspect this checkpoint; context left unchanged.");
+    });
   });
 }
 
@@ -543,6 +576,7 @@ const MODE_LABELS: Record<Mode, string> = {
 const KEY_SOURCE_LABELS: Record<TypesafeKeySource, string> = {
   env: "from the environment",
   saved: "saved",
+  command: "command configured (unverified)",
   ".env": "from .env",
   missing: "missing",
 };
@@ -556,6 +590,8 @@ function keyDetail(source: TypesafeKeySource, saved: boolean): string {
         : "In effect: TYPESAFE_API_KEY from the launch environment.";
     case "saved":
       return "In effect: the key saved here, for all sessions.";
+    case "command":
+      return "A key command is configured but has not been verified here. Status runs it to report the effective source; if it fails, the cwd .env still applies.";
     case ".env":
       return "In effect: TYPESAFE_API_KEY from the .env file in the working directory.";
     default:
@@ -805,9 +841,13 @@ export const register: Register = (on, options) => {
     if (!(await isActivated($)) || e.origin.kind !== "person" || view === "menu") return next(e);
     showMenu();
     await $.ui.invalidate("ui.render");
-    // Escape hands the keys to the prompt as it asks to close; ask for them back.
-    await openPane($).catch(() => undefined);
-    await placeRing($);
+    // Restore focus after this close dispatch: Escape's host-side handoff can otherwise
+    // release the keyboard after an in-hook open has already reclaimed it.
+    $.clock.after(0, () => {
+      void openPane($)
+        .then(() => placeRing($))
+        .catch(() => undefined);
+    });
     return { value: undefined };
   });
 
@@ -863,7 +903,7 @@ export const register: Register = (on, options) => {
         }),
       ]);
     }
-    const [rows, key] = await Promise.all([$.config.list(), resolvedKey($)]);
+    const [rows, key] = await Promise.all([$.config.list(), resolvedKey($, false)]);
     const savedKey = readSavedApiKey(rows, loadedOptions) !== undefined;
 
     /** A list of rows the ring moves through; the one at `focus` takes it first. */
