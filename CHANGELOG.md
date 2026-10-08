@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.12](https://github.com/MrGTV-love/compact-adviser/compare/compact-adviser-v0.1.11...compact-adviser-v0.1.12) (2026-10-08)
+
+
+### Features
+
+* fetch TypeSafe API keys with saved commands ([#2](https://github.com/MrGTV-love/compact-adviser/issues/2)) ([7d21cac](https://github.com/MrGTV-love/compact-adviser/commit/7d21cac0dde4f1e41a45a1a09d758051da3acb6b))
+* **pi-extension:** support Jev-guided automatic compaction in omp ([#1](https://github.com/MrGTV-love/compact-adviser/issues/1)) ([8392f4a](https://github.com/MrGTV-love/compact-adviser/commit/8392f4aae343b1aee83e685d1fb81e077f181556))
+
 ## [0.1.11](https://github.com/kunchenguid/compact-adviser/compare/compact-adviser-v0.1.10...compact-adviser-v0.1.11) (2026-09-29)
 
 
