@@ -49,7 +49,7 @@ Save a key that starts with `!`: the rest runs as `/bin/sh -c` and its trimmed s
 TYPESAFE_API_KEY=tsk-example
 ```
 
-Save this command (the path, not a copy of the key):
+Replace any previously saved key with this command (the settings then store only the command, not a copy of the key):
 
 ```
 !sed -n 's/^TYPESAFE_API_KEY=//p' "$HOME/secrets/.env"
@@ -57,9 +57,11 @@ Save this command (the path, not a copy of the key):
 
 Pi, omp, and Claude Code take it in the same TypeSafe API key setting that takes a pasted key. Codex takes it from `compact-adviser key set` and Grok from `compact-adviser key '<command>'`, both in a shell outside the host.
 
-- The command runs once per eligible judgment and when you request `status`, in the session's working directory, and only when `TYPESAFE_API_KEY` is unset. The key is never cached, written to disk, logged, or shown; `status` says `Key: command` when the command succeeds. Claude Code's settings pane does not execute commands on redraw and labels them configured but unverified.
-- A command that exits non-zero, runs past 10 seconds, or prints nothing, more than 1024 characters, or more than one line gives no key. The adviser then falls back to the cwd `./.env`, and with no key there it stays off (`Key: missing`).
-- Only the saved setting can hold a command. A value starting with `!` in `TYPESAFE_API_KEY` or in `./.env` is used as the literal key and never run, so a repository cannot make the adviser run anything.
+A non-empty launch-environment key wins over the saved setting (a literal key or a command), which wins over the session cwd's `./.env`.
+
+- The command runs once per eligible judgment and when you request `status`, in the session's working directory, and only when `TYPESAFE_API_KEY` is unset or blank. Status says `Key: command` when the command succeeds, never the key value. Claude Code's settings pane does not execute commands on redraw and labels them configured but unverified.
+- A command that exits non-zero, runs past 10 seconds, or whose trimmed stdout is empty or not a printable single line of at most 1024 characters gives no key. The adviser then falls back to the cwd `./.env`, and with no key there it stays off (`Key: missing`).
+- Only save commands you trust; see the [key-handling security boundaries](https://github.com/kunchenguid/compact-adviser/blob/main/SECURITY.md#conversation-data) for output handling and why environment and cwd `.env` values never execute.
 - It needs a POSIX `/bin/sh` (macOS or Linux). The saved text is the command, not the key, so store the path of the file that holds the key and nothing secret.
 
 ### Pi

@@ -29,7 +29,7 @@ macOS or Linux and Node 22.18 or newer are required, because the CLI is TypeScri
 | `off` | Stop advising; Codex's own compaction is unaffected |
 | `threshold <tokens\|default>` | Save an absolute token minimum |
 | `log <on\|off>` | Log each TypeSafe request and its outcome to a local jsonl file |
-| `key set` | Prompt for a TypeSafe API key and save it; the value is never printed |
+| `key set` | Prompt for a TypeSafe key or a key-fetch command and save it; see [key setup](../../README.md#fetch-the-key-with-a-command) |
 | `key clear` / `key status` | Remove the saved key, or report which source the key in effect came from |
 
 `key set` reads the key from the terminal, so ask the user to run that one themselves rather

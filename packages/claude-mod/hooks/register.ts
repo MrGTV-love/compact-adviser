@@ -143,8 +143,8 @@ async function runKeyCommand($: EngineInterface, command: string): Promise<strin
 }
 
 /**
- * The key in effect. A saved `!command` runs only when the environment has no key, and
- * not at all with `run` off (the settings view, which redraws often, names the source only).
+ * Settings redraws pass `run = false` to avoid executing credential commands; a configured
+ * command is then unverified, not an effective key source.
  */
 async function resolvedKey($: EngineInterface, run = true) {
   const fromEnv = await $.env.get("TYPESAFE_API_KEY");
