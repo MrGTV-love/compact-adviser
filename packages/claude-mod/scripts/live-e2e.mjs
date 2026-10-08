@@ -367,24 +367,6 @@ try {
     throw new Error(`[${step}] never highlighted ${JSON.stringify(rowText)}\n${screen()}`);
   }
 
-  async function openView(rowText, viewText) {
-    const deadline = Date.now() + 15000;
-    while (Date.now() < deadline) {
-      await moveTo(rowText);
-      key("Enter");
-      const opened = await waitFor(
-        (shot) => shot.includes(viewText),
-        `${JSON.stringify(rowText)} to open`,
-        1500,
-      ).then(
-        () => true,
-        () => false,
-      );
-      if (opened) return;
-    }
-    throw new Error(`[${step}] never opened ${JSON.stringify(rowText)}\n${screen()}`);
-  }
-
   step = "request logging";
   await moveTo("Log TypeSafe requests");
   key("Enter");
@@ -409,10 +391,14 @@ try {
   pass("Escape in a view returns to the list, keeping the keyboard and the row");
 
   step = "pane minimum";
-  await openView("Minimum context", "⏎ save");
+  await moveTo("Minimum context", "Up");
+  key("Enter");
+  // Observe the view, not the input's focus hint. Repeating Enter while it is opening
+  // can submit the unchanged minimum and return to the list before editing begins.
+  await waitText("› Minimum context");
   for (let i = 0; i < 5; i++) key("BSpace");
   type("40k");
-  await sleep(300);
+  await waitText("Tokens: 40k");
   key("Enter");
   await waitText("Enter a positive whole number of tokens, for example 40000.");
   await waitText("Tokens: 40k");
@@ -420,7 +406,7 @@ try {
     throw new Error(`[${step}] an invalid minimum was saved`);
   for (let i = 0; i < 3; i++) key("BSpace");
   type("60000");
-  await sleep(300);
+  await waitText("Tokens: 60000");
   key("Enter");
   await waitText("Minimum context saved: 60,000 tokens");
   await waitFor(
